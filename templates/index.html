@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ app_name }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="frame">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">STL <span class="arrow">&rarr;</span> STEP</span>
+      </div>
+      <div class="version-badge" title="Programmversion">v{{ version }}</div>
+    </header>
+
+    <main class="stage">
+      <section class="panel upload-panel">
+        <h1>Flächenrückführung</h1>
+        <p class="subtitle">
+          Wandelt ein STL-Dreiecksnetz vollständig in einen einzelnen
+          Volumenkörper (.stp) um. Ebene Bereiche werden dabei zu
+          durchgehenden Flächen zusammengeführt.
+        </p>
+
+        <div id="dropzone" class="dropzone">
+          <input type="file" id="fileInput" accept=".stl" hidden>
+          <div class="dropzone-icon">▲</div>
+          <div class="dropzone-text">
+            <strong>STL-Datei hier ablegen</strong>
+            <span>oder klicken, um eine Datei auszuwählen</span>
+          </div>
+          <div id="fileName" class="file-name"></div>
+        </div>
+
+        <button id="convertBtn" class="btn-primary" disabled>Umwandlung starten</button>
+
+        <div id="progressSection" class="progress-section hidden">
+          <div class="progress-track">
+            <div id="progressFill" class="progress-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-row">
+            <span id="progressMessage" class="progress-message">Bereit.</span>
+            <span id="progressPercent" class="progress-percent">0%</span>
+          </div>
+        </div>
+
+        <div id="resultBox" class="result-box hidden">
+          <div class="result-row">
+            <span class="result-label">Ergebnis</span>
+            <span id="resultKind" class="result-value">-</span>
+          </div>
+          <div class="result-row">
+            <span class="result-label">Flächen vorher / nachher</span>
+            <span id="resultFaces" class="result-value">-</span>
+          </div>
+          <a id="downloadLink" class="btn-secondary" href="#">STP-Datei herunterladen</a>
+        </div>
+
+        <div id="errorBox" class="error-box hidden"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>{{ app_name }}</span>
+      <span class="dot-sep">&middot;</span>
+      <span>v{{ version }}</span>
+      <span class="dot-sep">&middot;</span>
+      <span>läuft lokal in diesem Fenster</span>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

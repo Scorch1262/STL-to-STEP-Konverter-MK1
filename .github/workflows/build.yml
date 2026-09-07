@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+env:
+  APP_NAME: STL-STEP-Konverter-MK1
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Windows-exe bauen (mit sichtbarem Konsolenfenster)
+        run: >
+          pyinstaller --noconfirm --clean --onedir --console
+          --name "${{ env.APP_NAME }}"
+          --collect-all OCP
+          --add-data "templates;templates"
+          --add-data "static;static"
+          app.py
+
+      - name: Artefakt vorbereiten
+        run: |
+          mkdir out
+          Compress-Archive -Path "dist\${{ env.APP_NAME }}\*" -DestinationPath "out\${{ env.APP_NAME }}-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-windows
+          path: out/${{ env.APP_NAME }}-windows.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: macOS-App bauen
+        run: >
+          pyinstaller --noconfirm --clean --onedir --windowed
+          --name "${{ env.APP_NAME }}"
+          --collect-all OCP
+          --add-data "templates:templates"
+          --add-data "static:static"
+          app.py
+
+      # macOS zeigt bei .app-Bundles standardmäßig kein Konsolenfenster.
+      # Das echte Binary wird daher umbenannt und durch das Terminal-
+      # Wrapper-Skript ersetzt, damit sich das Programm bequem per
+      # Fenster-schließen oder STRG+C beenden lässt.
+      - name: Terminal-Wrapper einsetzen
+        run: |
+          MACOS_DIR="dist/${{ env.APP_NAME }}.app/Contents/MacOS"
+          mv "$MACOS_DIR/${{ env.APP_NAME }}" "$MACOS_DIR/${{ env.APP_NAME }}-bin"
+          cp packaging/macos/launch_in_terminal.sh "$MACOS_DIR/${{ env.APP_NAME }}"
+          chmod +x "$MACOS_DIR/${{ env.APP_NAME }}" "$MACOS_DIR/${{ env.APP_NAME }}-bin"
+
+      - name: Artefakt vorbereiten
+        run: |
+          mkdir out
+          ditto -c -k --sequesterRsrc --keepParent "dist/${{ env.APP_NAME }}.app" "out/${{ env.APP_NAME }}-macos.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-macos
+          path: out/${{ env.APP_NAME }}-macos.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/${{ env.APP_NAME }}-windows/${{ env.APP_NAME }}-windows.zip
+            artifacts/${{ env.APP_NAME }}-macos/${{ env.APP_NAME }}-macos.zip

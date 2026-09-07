@@ -1,0 +1,3 @@
+Flask>=3.0,<4
+cadquery-ocp-novtk>=8.0.0,<9
+pyinstaller>=6.10

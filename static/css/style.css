@@ -1,0 +1,237 @@
+:root {
+  --bg: #14171c;
+  --bg-deep: #0e1015;
+  --panel: #1b1f27;
+  --panel-border: #2a2f3a;
+  --text: #e8ecf1;
+  --text-dim: #8b93a1;
+  --accent: #00c389;
+  --accent-soft: rgba(0, 195, 137, 0.14);
+  --warn: #ff8a3d;
+  --danger: #ff5470;
+  --radius: 10px;
+  font-size: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: radial-gradient(circle at top, var(--bg) 0%, var(--bg-deep) 100%);
+  color: var(--text);
+  font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.frame {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-size: 1.05rem;
+}
+
+.brand-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.brand .arrow { color: var(--accent); }
+
+.version-badge {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  border: 1px solid var(--panel-border);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 32px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.upload-panel h1 {
+  margin: 0 0 6px;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 0 0 24px;
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  max-width: 68ch;
+}
+
+.dropzone {
+  border: 1.5px dashed var(--panel-border);
+  border-radius: var(--radius);
+  padding: 28px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  margin-bottom: 18px;
+}
+
+.dropzone:hover,
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone-icon {
+  color: var(--accent);
+  font-size: 1.1rem;
+  margin-bottom: 8px;
+}
+
+.dropzone-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.dropzone-text strong { color: var(--text); font-size: 0.98rem; }
+
+.file-name {
+  margin-top: 10px;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 0.85rem;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.btn-primary, .btn-secondary {
+  display: inline-block;
+  width: 100%;
+  text-align: center;
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  border: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #06120d;
+}
+
+.btn-primary:disabled {
+  background: #2a2f3a;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  margin-top: 6px;
+}
+
+.progress-section { margin-top: 22px; }
+.hidden { display: none !important; }
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #10131a;
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--warn));
+  transition: width 0.25s ease;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.progress-percent {
+  font-family: Consolas, Menlo, monospace;
+  color: var(--text);
+}
+
+.result-box {
+  margin-top: 20px;
+  padding: 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-deep);
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  padding: 4px 0;
+}
+
+.result-label { color: var(--text-dim); }
+.result-value { font-family: Consolas, Menlo, monospace; }
+
+.error-box {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger);
+  background: rgba(255, 84, 112, 0.1);
+  color: var(--danger);
+  font-size: 0.88rem;
+}
+
+.footer {
+  padding: 14px 28px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  border-top: 1px solid var(--panel-border);
+}
+
+.dot-sep { margin: 0 6px; }
