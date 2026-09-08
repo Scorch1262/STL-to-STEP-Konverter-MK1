@@ -6,24 +6,47 @@ dabei zu einem einzigen Volumenkörper zusammengefasst.
 
 ## Funktionsweise (kurz)
 
-1. STL-Netz einlesen.
+1. STL-Netz einlesen (optional vorher glätten/vereinfachen, siehe Einstellungen).
 2. Alle Dreiecksflächen zu einer Hülle vernähen (Sewing).
 3. Ist die Hülle geschlossen: einen Volumenkörper daraus bauen
    (ein Körper, kein loses Flächenhaufen).
 4. Benachbarte, in derselben Ebene liegende Dreiecke zu jeweils
    einer großen, echten Fläche zusammenfassen.
-5. Ergebnis als STEP (AP214) schreiben.
+5. Gekrümmte Bereiche (Zylinder/Kugeln) werden erkannt und mit
+   Radius + Trefferquote angezeigt (rein informativ).
+6. Ergebnis als STEP (AP214) schreiben, zusätzlich eine 3D-Vorschau
+   (Vorher/Nachher) direkt auf der Weboberfläche.
 
 **Wichtige Einschränkung:** Anders als eine vollständige
 Flächenrückführung à la Geomagic Wrap/Design X (automatische
 Segmentierung + Anpassung von NURBS-Flächen auch an gekrümmte /
 freiformige Bereiche) werden hier nur **ebene** Bereiche zu echten
-Flächen zusammengeführt. Gekrümmte Bereiche (Rundungen, organische
-Formen) bleiben als Dreiecksfacetten erhalten – sind aber weiterhin
-Teil des einen Volumenkörpers und liegen als gültige STEP-Flächen vor.
-Eine echte automatische NURBS-Anpassung für Freiformflächen wäre ein
-eigenständiges, deutlich aufwändigeres Ausbaustadium (siehe
-`CHANGELOG.md`, Abschnitt „Ideen für später“).
+Flächen zusammengeführt. Der automatische Ersatz erkannter
+Zylinder/Kugeln durch echte gekrümmte STEP-Flächen wurde versucht und
+wieder verworfen, weil der Naht-/Solid-Aufbau an den Übergangskanten
+in Tests ungültige Geometrie erzeugte - siehe `CHANGELOG.md`. Gekrümmte
+Bereiche bleiben deshalb als Dreiecksfacetten erhalten, sind aber
+weiterhin Teil des einen Volumenkörpers und liegen als gültige
+STEP-Flächen vor.
+
+## Einstellungen auf der Weboberfläche
+
+- **Glättung** (0–10): Taubin-Glättung vor der Umwandlung, entfernt
+  Netzrauschen ohne das Modell sichtbar zu schrumpfen.
+- **Vereinfachung**: Ziel-Dreieckszahl in % der ursprünglichen Anzahl.
+- **Ebene Flächen zusammenführen**: an/aus.
+- **Zylinder/Kugeln erkennen**: an/aus (nur Anzeige, ändert die
+  Geometrie nicht).
+
+## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern
+
+Die Umwandlung läuft in einem eigenen Server-Thread und damit
+unabhängig davon, ob der Browser-Tab gerade sichtbar ist. Der
+Live-Fortschritt (SSE) wird per Heartbeat abgesichert; bricht die
+Verbindung trotzdem ab, übernimmt automatisch eine Status-Abfrage im
+Hintergrund. Die Job-ID wird im Browser gespeichert, sodass ein
+Neuladen der Seite den laufenden bzw. fertigen Auftrag wiederfindet.
+
 
 ## Starten (aus dem Quellcode)
 

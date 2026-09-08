@@ -29,6 +29,9 @@ jobs:
           pyinstaller --noconfirm --clean --onedir --console
           --name "${{ env.APP_NAME }}"
           --collect-all OCP
+          --collect-all trimesh
+          --collect-all fast_simplification
+          --collect-all pyransac3d
           --add-data "templates;templates"
           --add-data "static;static"
           app.py
@@ -62,6 +65,9 @@ jobs:
           pyinstaller --noconfirm --clean --onedir --windowed
           --name "${{ env.APP_NAME }}"
           --collect-all OCP
+          --collect-all trimesh
+          --collect-all fast_simplification
+          --collect-all pyransac3d
           --add-data "templates:templates"
           --add-data "static:static"
           app.py

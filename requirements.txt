@@ -1,3 +1,6 @@
 Flask>=3.0,<4
 cadquery-ocp-novtk>=8.0.0,<9
+trimesh>=4.0
+pyransac3d>=0.6
+fast-simplification>=0.1
 pyinstaller>=6.10

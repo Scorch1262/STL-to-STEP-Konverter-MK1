@@ -69,9 +69,11 @@ html, body {
 .stage {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  gap: 24px;
   padding: 32px 20px;
+  flex-wrap: wrap;
 }
 
 .panel {
@@ -81,6 +83,120 @@ html, body {
   padding: 32px;
   width: 100%;
   max-width: 520px;
+}
+
+.preview-panel {
+  padding: 20px;
+  max-width: 520px;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.preview-tab {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-deep);
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.preview-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.preview-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.viewer {
+  flex: 1;
+  min-height: 340px;
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+}
+
+.viewer canvas { display: block; }
+
+.viewer-hint {
+  margin: 10px 2px 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.settings {
+  margin: 4px 0 18px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 4px 14px;
+}
+
+.settings summary {
+  cursor: pointer;
+  padding: 10px 0;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.settings[open] summary { color: var(--text); }
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--panel-border);
+}
+
+.setting-row label {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.setting-row input[type="range"] {
+  grid-column: 1 / -1;
+  accent-color: var(--accent);
+}
+
+.setting-row-toggle {
+  grid-template-columns: 1fr auto;
+}
+
+.setting-row-toggle input[type="checkbox"] {
+  grid-column: auto;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.setting-val {
+  font-family: Consolas, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.settings-hint {
+  margin: 10px 0 12px;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  line-height: 1.4;
 }
 
 .upload-panel h1 {
