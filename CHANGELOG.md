@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.3.0 - Grosse Performance-Ueberarbeitung
+- **Sewing eliminiert:** Der bisher groesste Engpass (BRepBuilderAPI_Sewing)
+  entfaellt fuer die meisten Netze komplett. Ein neuer schneller Pfad baut
+  den Volumenkoerper direkt aus geteilter Topologie auf (jeder Eckpunkt/
+  jede Kante wird nur einmal angelegt, statt die Nachbarschaft ueber
+  eine teure toleranzbasierte Naeherungssuche neu zu entdecken). Grundlage:
+  eine gezielte Recherche zu OpenCASCADE-Performance, die bestaetigte,
+  dass Sewing laut den OCCT-Entwicklern selbst "nicht fuer diese Art von
+  Eingabe ausgelegt" ist, wenn - wie zuvor - jedes Dreieck als
+  unabhaengige Einzelflaeche eingespeist wird.
+- **Ergebnis in eigenen Benchmarks:** 81.920 Dreiecke (Kugel) vorher
+  ca. 133s, jetzt ca. 29s (~4,5x schneller) - bei identischem, weiterhin
+  vollstaendig geprueftem Volumenkoerper.
+- **Sicherheitsnetz bleibt bestehen:** Der schnelle Pfad wird nur
+  versucht, wenn das Netz bereits wasserdicht und wicklungskonsistent
+  ist, und das Ergebnis wird danach trotzdem validiert. Schlaegt
+  irgendein Schritt fehl, faellt die Umwandlung automatisch auf den
+  bisherigen, langsameren aber toleranteren Sewing-Pfad zurueck. Am
+  Ende steht dadurch immer entweder ein echter, geprueft gueltiger
+  Volumenkoerper oder eine ehrliche "Netz nicht wasserdicht"-Meldung -
+  nie werden unbearbeitete Rohdreiecke als Ergebnis ausgeliefert.
+- RANSAC-Zylinder-/Kugel-Fit laeuft jetzt auf einer Stichprobe statt auf
+  allen Punkten einer Region (Trefferquote wird danach auf allen
+  Punkten nachgerechnet) - bei sehr grossen einzelnen Rundungen
+  (z. B. einer kompletten Kugel aus zehntausenden Facetten) allein
+  dadurch bis zu 36x schneller.
+- Volumenkoerper-Pruefung nach dem schnellen Aufbau nutzt eine reine
+  Topologiepruefung statt der vollen geometrischen Kontrolle (bei
+  exakt geteilter Topologie durch Konstruktion ausreichend und ca. 40%
+  schneller). Der eingebaute Parallel-Modus von OCCTs Pruefroutine
+  wurde in eigenen Tests dagegen NICHT schneller (teils sogar
+  langsamer) und wird deshalb bewusst nicht verwendet.
+
 ## 1.2.0
 - **Automatischer Flächenersatz:** Volle Zylinder (Bohrungen, Wellen),
   Kugeln und Wölbungen werden jetzt automatisch durch echte,

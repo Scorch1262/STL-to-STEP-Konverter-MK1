@@ -41,33 +41,58 @@ STEP-Datei ausgeliefert.
 - **Ebene Flächen zusammenführen**: an/aus.
 - **Zylinder/Kugeln automatisch ersetzen**: an/aus.
 
-## Performance bei sehr großen Netzen - ehrlicher Stand
+## Performance bei großen Netzen
 
-Die Erkennung passender Zylinder/Kugeln läuft vektorisiert
-(numpy/scipy) und die eigentliche Kandidatensuche parallel über
-mehrere Prozessorkerne (ein Kandidat pro Kern). Das bringt bei
-mittelgroßen Netzen (zehntausende Dreiecke) einen spürbaren
-Geschwindigkeitsgewinn.
+**Der größte Engpass wurde beseitigt:** Bis Version 1.2.0 lief jede
+Umwandlung über OpenCASCADEs `BRepBuilderAPI_Sewing` - ein
+toleranzbasiertes Verfahren, das bei tausenden Einzelfacetten deutlich
+schlechter als linear skaliert (eigene Messung: 4x mehr Dreiecke →
+ca. 7x mehr Zeit). Eine gezielte Recherche zur OCCT-Performance ergab:
+Die OCCT-Entwickler selbst bestätigen im offiziellen Forum, dass Sewing
+für genau diesen Anwendungsfall (ein Dreieck = eine unabhängige Fläche)
+"nicht ausgelegt" ist und empfehlen, geteilte Topologie direkt
+aufzubauen.
 
-Der eigentliche Flaschenhals bei **sehr** großen Netzen (Hunderttausende
-bis Millionen Dreiecke, erst recht im zweistelligen Millionenbereich)
-liegt aber in OpenCASCADEs eigenen Kernroutinen zum Vernähen und zur
-Volumenkörper-Gültigkeitsprüfung - diese sind über die verfügbaren
-Python-Bindings nicht parallelisierbar und skalieren spürbar
-schlechter als linear (in eigenen Tests: 4x mehr Dreiecke → ca. 7x
-mehr Zeit). Ein Netz mit z. B. 100 Millionen Dreiecken (mehrere GB
-allein als Datei) ist mit dieser Architektur nicht in praktikabler
-Zeit verarbeitbar - das ist eine Grenze von OpenCASCADE selbst, keine
-reine Python-Performance-Frage.
+Seit Version 1.3.0 tut dieses Programm genau das: Eckpunkte und Kanten
+werden aus der ohnehin bekannten Netz-Nachbarschaft **jeweils nur ein
+einziges Mal** angelegt und von den angrenzenden Dreiecken gemeinsam
+genutzt - der Volumenkörper ist dadurch beim Aufbau bereits
+"vernäht", ein Sewing-Aufruf entfällt komplett. Zusätzlich läuft die
+Zylinder-/Kugel-Erkennung selbst jetzt auf einer Stichprobe statt auf
+allen Punkten einer Region, und die Volumenkörper-Prüfung nach dem
+schnellen Aufbau nutzt eine günstigere reine Topologieprüfung.
 
-**Praktische Empfehlung für sehr große Dateien:** die Einstellung
-„Vereinfachung“ (Dezimierung) *zuerst* nutzen, um die Dreieckszahl auf
-ein handhabbares Maß zu reduzieren - dieser Schritt läuft in einer
-schnellen, für große Netze ausgelegten Bibliothek (`fast-simplification`)
-und passiert *vor* den teuren OpenCASCADE-Schritten. Ab automatisch
-300.000 Dreiecken wird die Zylinder-/Kugel-Erkennung übersprungen
-(reine Flächenrückführung läuft trotzdem weiter), um die Verarbeitung
-nicht unnötig auszubremsen.
+**Ergebnis in eigenen Benchmarks** (identische Hardware, gleiche
+Testdatei, jeweils vollständig geprüfter, gültiger Volumenkörper):
+
+| Dreiecke | Vorher (v1.2.0) | Jetzt (v1.3.0) | Faktor |
+|---|---|---|---|
+| 20.480 | ca. 18,5 s | ca. 7,5 s | ~2,5x |
+| 81.920 | ca. 133 s | ca. 29 s | ~4,5x |
+
+**Wichtig - Korrektheit geht vor Tempo:** Der schnelle Pfad wird nur
+versucht, wenn das Netz bereits als wasserdicht und wicklungskonsistent
+erkannt wird. Schlägt er dennoch fehl (z. B. bei ungewöhnlich
+unsauberen Netzen), fällt die Umwandlung automatisch auf den
+bisherigen, langsameren aber toleranteren Sewing-Pfad zurück. Am Ende
+steht dadurch **immer** entweder ein echter, geprüft gültiger
+Volumenkörper oder eine ehrliche „Netz nicht wasserdicht"-Meldung -
+nie werden unbearbeitete Rohdreiecke als Ergebnis ausgeliefert.
+
+**Verbleibende, ehrliche Grenze:** Der Flächen-Aufbau selbst läuft noch
+als Python-Schleife über jede Facette (mehrere OpenCASCADE-Aufrufe pro
+Dreieck) - das ist inzwischen linear statt überlinear, hat aber
+weiterhin einen Sockelbetrag an Aufwand pro Dreieck. Bei einem Netz mit
+z. B. 100 Millionen Dreiecken (mehrere GB allein als Datei) wäre auch
+mit dieser deutlich saubereren Architektur noch mit mehreren Stunden zu
+rechnen. **Praktische Empfehlung für sehr große Dateien:** die
+Einstellung „Vereinfachung" (Dezimierung) *zuerst* nutzen, um die
+Dreieckszahl auf ein handhabbares Maß zu reduzieren - dieser Schritt
+läuft in einer schnellen, für große Netze ausgelegten Bibliothek
+(`fast-simplification`) und passiert *vor* dem OpenCASCADE-Aufbau. Ab
+automatisch 300.000 Dreiecken wird zusätzlich die Zylinder-/Kugel-
+Erkennung übersprungen (reine Flächenrückführung läuft trotzdem
+weiter), um die Verarbeitung nicht unnötig auszubremsen.
 
 ## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern
 
