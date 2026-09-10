@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.2.0
+- **Automatischer Flächenersatz:** Volle Zylinder (Bohrungen, Wellen),
+  Kugeln und Wölbungen werden jetzt automatisch durch echte,
+  analytisch exakte STEP-Flächen ersetzt (nicht mehr nur erkannt und
+  angezeigt wie in 1.1.0). Beispiel: eine Platte mit 3 Bohrungen
+  unterschiedlichen Radius' wird von 600 Facetten auf 9 echte Flächen
+  reduziert, bei exakt erhaltenem Volumen. Teilausschnitte,
+  Verrundungen mit wechselndem Radius und Freiformflächen bleiben wie
+  gehabt als Facetten erhalten.
+- Absicherung: Gelingt der Ersetzungsversuch am Ende nicht (Volumen-
+  körper wäre ungültig), wird automatisch und vollständig auf die
+  reine Facetten-Lösung zurückgefallen - es wird nie eine kaputte
+  STEP-Datei ausgeliefert.
+- Mehrkern-Nutzung: Die Suche nach passenden Zylindern/Kugeln läuft
+  jetzt über mehrere Prozesse parallel (ein Kandidat pro Kern).
+- Grundlegende Performance-Überarbeitung der Erkennung: Regionen-
+  wachstum und Punktauswertung laufen jetzt vektorisiert über
+  numpy/scipy statt einzeln pro Facette über OpenCASCADE-Aufrufe -
+  bei 20.000 Dreiecken ca. 2x schneller, vor allem aber grundsätzlich
+  besser skalierbar. Siehe README für die ehrlichen Grenzen bei sehr
+  großen Netzen (mehrere Millionen+ Dreiecke).
+- Zwei Fehlerquellen behoben, die zuvor Bohrungen/Rundungen verpassen
+  konnten: fehlerhafte (wicklungsabhängige) Normalenberechnung und
+  eine zu früh greifende Vollständigkeitsprüfung.
+- 3D-Vorschau: Kanten der Facetten (STL) bzw. Flächengrenzen
+  (STEP-Ergebnis) werden jetzt als Overlay eingezeichnet.
+- Die STL-Vorschau erscheint jetzt sofort nach Dateiauswahl, direkt im
+  Browser gerendert - noch bevor irgendetwas hochgeladen wurde.
+
 ## 1.1.0
 - Fortschritts-Stream mit Heartbeat abgesichert: Bricht nicht mehr ab,
   wenn der Browser-Tab länger im Hintergrund ist oder die Verbindung

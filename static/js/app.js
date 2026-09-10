@@ -36,6 +36,7 @@ const tabAfter = document.getElementById("tabAfter");
 const viewerEl = document.getElementById("viewer");
 
 let selectedFile = null;
+let selectedFileBuffer = null;
 let currentJobId = null;
 let eventSource = null;
 let pollTimer = null;
@@ -101,14 +102,13 @@ function animate() {
   if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
-function loadPreview(url) {
+function loadPreview(url, { fromArrayBuffer } = {}) {
   ensureViewer();
   const loader = new STLLoader();
-  loader.load(url, (geometry) => {
+
+  const onGeometry = (geometry) => {
     if (currentMesh) {
       scene.remove(currentMesh);
-      currentMesh.geometry.dispose();
-      currentMesh.material.dispose();
     }
 
     geometry.computeVertexNormals();
@@ -120,7 +120,19 @@ function loadPreview(url) {
       roughness: 0.55,
       flatShading: true,
     });
-    currentMesh = new THREE.Mesh(geometry, material);
+    const solidMesh = new THREE.Mesh(geometry, material);
+
+    // Kanten der einzelnen Facetten/Flaechen als Overlay einzeichnen,
+    // damit man Dreiecksstruktur (STL) bzw. Flaechengrenzen (STEP-
+    // Vorschau) erkennen kann. thresholdAngle filtert reines
+    // Facettenrauschen einer glatten Kruemmung nicht heraus - genau
+    // das soll ja sichtbar sein.
+    const edges = new THREE.EdgesGeometry(geometry, 1);
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x0a2318, transparent: true, opacity: 0.35 });
+    const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
+    solidMesh.add(edgeLines);
+
+    currentMesh = solidMesh;
     scene.add(currentMesh);
 
     const box = geometry.boundingBox;
@@ -138,13 +150,23 @@ function loadPreview(url) {
     camera.updateProjectionMatrix();
     controls.target.set(0, 0, 0);
     controls.update();
-  });
+  };
+
+  if (fromArrayBuffer) {
+    onGeometry(loader.parse(fromArrayBuffer));
+  } else {
+    loader.load(url, onGeometry);
+  }
 }
 
 tabBefore.addEventListener("click", () => {
   if (tabBefore.disabled) return;
   setActiveTab(tabBefore);
-  loadPreview(`/api/preview/input/${currentJobId}`);
+  if (selectedFileBuffer) {
+    loadPreview(null, { fromArrayBuffer: selectedFileBuffer });
+  } else if (currentJobId) {
+    loadPreview(`/api/preview/input/${currentJobId}`);
+  }
 });
 tabAfter.addEventListener("click", () => {
   if (tabAfter.disabled) return;
@@ -180,6 +202,19 @@ function pickFile(file) {
   fileNameEl.textContent = file.name;
   convertBtn.disabled = false;
   resetPanels();
+
+  // Sofort-Vorschau, noch bevor irgendetwas hochgeladen oder
+  // umgewandelt wurde: die Datei wird direkt im Browser gelesen und
+  // gerendert, ganz ohne Serverkontakt.
+  const reader = new FileReader();
+  reader.onload = () => {
+    selectedFileBuffer = reader.result;
+    previewPanel.classList.remove("hidden");
+    tabAfter.disabled = true;
+    setActiveTab(tabBefore);
+    loadPreview(null, { fromArrayBuffer: selectedFileBuffer });
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 dropzone.addEventListener("click", () => fileInput.click());
@@ -252,7 +287,11 @@ async function startConversion() {
   previewPanel.classList.remove("hidden");
   tabAfter.disabled = true;
   setActiveTab(tabBefore);
-  loadPreview(`/api/preview/input/${jobId}`);
+  // Die "Vorher"-Ansicht steht durch die Sofort-Vorschau schon; nur
+  // falls sie aus irgendeinem Grund fehlt, vom Server nachladen.
+  if (!selectedFileBuffer) {
+    loadPreview(`/api/preview/input/${jobId}`);
+  }
 
   trackJob(jobId);
 }
@@ -309,7 +348,7 @@ function handleJobPayload(jobId, payload) {
     if (payload.detected_shapes && payload.detected_shapes.length > 0) {
       resultShapesRow.classList.remove("hidden");
       resultShapes.textContent = payload.detected_shapes
-        .map((s) => `${s.kind} r≈${s.radius}`)
+        .map((s) => `${s.kind} r≈${s.radius}${s.replaced ? "" : " (nicht ersetzt)"}`)
         .join(", ");
     }
 

@@ -57,13 +57,15 @@
           </div>
 
           <div class="setting-row setting-row-toggle">
-            <label for="detectShapes">Zylinder/Kugeln erkennen (Info)</label>
+            <label for="detectShapes">Zylinder/Kugeln automatisch ersetzen</label>
             <input type="checkbox" id="detectShapes" checked>
           </div>
 
           <p class="settings-hint">
-            Erkannte Rundungen werden angezeigt, aber aktuell nicht
-            automatisch durch glatte STEP-Flächen ersetzt (siehe README).
+            Volle Zylinder (Bohrungen, Wellen), Kugeln und Wölbungen
+            werden automatisch durch echte, glatte STEP-Flächen
+            ersetzt. Teilausschnitte, Verrundungen mit wechselndem
+            Radius und Freiformflächen bleiben als Facetten erhalten.
           </p>
         </details>
 
@@ -89,7 +91,7 @@
             <span id="resultFaces" class="result-value">-</span>
           </div>
           <div id="resultShapesRow" class="result-row hidden">
-            <span class="result-label">Erkannte Rundungen</span>
+            <span class="result-label">Ersetzte/erkannte Rundungen</span>
             <span id="resultShapes" class="result-value">-</span>
           </div>
           <a id="downloadLink" class="btn-secondary" href="#">STP-Datei herunterladen</a>

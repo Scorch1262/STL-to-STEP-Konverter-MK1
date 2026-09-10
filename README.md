@@ -10,24 +10,28 @@ dabei zu einem einzigen Volumenkörper zusammengefasst.
 2. Alle Dreiecksflächen zu einer Hülle vernähen (Sewing).
 3. Ist die Hülle geschlossen: einen Volumenkörper daraus bauen
    (ein Körper, kein loses Flächenhaufen).
-4. Benachbarte, in derselben Ebene liegende Dreiecke zu jeweils
-   einer großen, echten Fläche zusammenfassen.
-5. Gekrümmte Bereiche (Zylinder/Kugeln) werden erkannt und mit
-   Radius + Trefferquote angezeigt (rein informativ).
+4. **Volle Zylinder (Bohrungen, Wellen), Kugeln und Wölbungen werden
+   automatisch erkannt und durch echte, analytisch exakte STEP-Flächen
+   ersetzt** - nicht mehr nur triangulierte Facetten. Eine Platte mit
+   3 Bohrungen wird so z. B. von 600 Facetten auf 9 echte Flächen
+   reduziert, bei exakt erhaltenem Volumen.
+5. Verbleibende benachbarte, in derselben Ebene liegende Dreiecke
+   werden zu jeweils einer großen, echten Fläche zusammengefasst.
 6. Ergebnis als STEP (AP214) schreiben, zusätzlich eine 3D-Vorschau
-   (Vorher/Nachher) direkt auf der Weboberfläche.
+   (Vorher/Nachher inkl. Kanten-Overlay) direkt auf der Weboberfläche.
 
-**Wichtige Einschränkung:** Anders als eine vollständige
-Flächenrückführung à la Geomagic Wrap/Design X (automatische
-Segmentierung + Anpassung von NURBS-Flächen auch an gekrümmte /
-freiformige Bereiche) werden hier nur **ebene** Bereiche zu echten
-Flächen zusammengeführt. Der automatische Ersatz erkannter
-Zylinder/Kugeln durch echte gekrümmte STEP-Flächen wurde versucht und
-wieder verworfen, weil der Naht-/Solid-Aufbau an den Übergangskanten
-in Tests ungültige Geometrie erzeugte - siehe `CHANGELOG.md`. Gekrümmte
-Bereiche bleiben deshalb als Dreiecksfacetten erhalten, sind aber
-weiterhin Teil des einen Volumenkörpers und liegen als gültige
-STEP-Flächen vor.
+**Wichtige Einschränkung:** Ersetzt werden nur **vollständige**
+Zylinder-/Kugelflächen (volle 360° um Achse bzw. Pol) - das deckt die
+häufigsten Fälle ab (Bohrungen, Wellen/Bolzen, Kuppeln, volle Kugeln).
+Teilausschnitte, Verrundungen mit wechselndem Radius (variable
+Fillets) und echte Freiformflächen bleiben als Facetten erhalten -
+eine vollständige automatische Flächenrückführung wie in Geomagic
+Wrap/Design X (inkl. Segmentierung beliebiger Freiformflächen in
+NURBS-Patches) ist damit nicht erreicht. Schlägt der Ersetzungsversuch
+am Ende der Verarbeitung dennoch fehl (z. B. weil der resultierende
+Volumenkörper ungültig wäre), wird automatisch und vollständig auf die
+reine Facetten-Lösung zurückgefallen - es wird nie eine kaputte
+STEP-Datei ausgeliefert.
 
 ## Einstellungen auf der Weboberfläche
 
@@ -35,8 +39,35 @@ STEP-Flächen vor.
   Netzrauschen ohne das Modell sichtbar zu schrumpfen.
 - **Vereinfachung**: Ziel-Dreieckszahl in % der ursprünglichen Anzahl.
 - **Ebene Flächen zusammenführen**: an/aus.
-- **Zylinder/Kugeln erkennen**: an/aus (nur Anzeige, ändert die
-  Geometrie nicht).
+- **Zylinder/Kugeln automatisch ersetzen**: an/aus.
+
+## Performance bei sehr großen Netzen - ehrlicher Stand
+
+Die Erkennung passender Zylinder/Kugeln läuft vektorisiert
+(numpy/scipy) und die eigentliche Kandidatensuche parallel über
+mehrere Prozessorkerne (ein Kandidat pro Kern). Das bringt bei
+mittelgroßen Netzen (zehntausende Dreiecke) einen spürbaren
+Geschwindigkeitsgewinn.
+
+Der eigentliche Flaschenhals bei **sehr** großen Netzen (Hunderttausende
+bis Millionen Dreiecke, erst recht im zweistelligen Millionenbereich)
+liegt aber in OpenCASCADEs eigenen Kernroutinen zum Vernähen und zur
+Volumenkörper-Gültigkeitsprüfung - diese sind über die verfügbaren
+Python-Bindings nicht parallelisierbar und skalieren spürbar
+schlechter als linear (in eigenen Tests: 4x mehr Dreiecke → ca. 7x
+mehr Zeit). Ein Netz mit z. B. 100 Millionen Dreiecken (mehrere GB
+allein als Datei) ist mit dieser Architektur nicht in praktikabler
+Zeit verarbeitbar - das ist eine Grenze von OpenCASCADE selbst, keine
+reine Python-Performance-Frage.
+
+**Praktische Empfehlung für sehr große Dateien:** die Einstellung
+„Vereinfachung“ (Dezimierung) *zuerst* nutzen, um die Dreieckszahl auf
+ein handhabbares Maß zu reduzieren - dieser Schritt läuft in einer
+schnellen, für große Netze ausgelegten Bibliothek (`fast-simplification`)
+und passiert *vor* den teuren OpenCASCADE-Schritten. Ab automatisch
+300.000 Dreiecken wird die Zylinder-/Kugel-Erkennung übersprungen
+(reine Flächenrückführung läuft trotzdem weiter), um die Verarbeitung
+nicht unnötig auszubremsen.
 
 ## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern
 
@@ -46,6 +77,14 @@ Live-Fortschritt (SSE) wird per Heartbeat abgesichert; bricht die
 Verbindung trotzdem ab, übernimmt automatisch eine Status-Abfrage im
 Hintergrund. Die Job-ID wird im Browser gespeichert, sodass ein
 Neuladen der Seite den laufenden bzw. fertigen Auftrag wiederfindet.
+
+## 3D-Vorschau
+
+Die STL-Datei wird sofort nach Auswahl direkt im Browser angezeigt -
+noch bevor irgendetwas hochgeladen wurde. Nach der Umwandlung zeigt
+der zweite Tab das neu triangulierte STEP-Ergebnis. In beiden
+Ansichten werden die Kanten der einzelnen Facetten (STL) bzw.
+Flächengrenzen (STEP-Ergebnis) als Overlay eingezeichnet.
 
 
 ## Starten (aus dem Quellcode)

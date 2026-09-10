@@ -1,65 +1,69 @@
 """
-STL -> STEP Konverter ("Flaechenrueckfuehrung light") - v1.1
+STL -> STEP Konverter ("Flaechenrueckfuehrung") - v1.2
 
 Ablauf:
-1. STL laden (per trimesh), optional glaetten (Laplacian) und/oder
+1. STL laden (per trimesh), optional glaetten (Taubin) und/oder
    vereinfachen (Dezimierung), dann als Zwischen-STL exportieren.
-2. Mit OpenCASCADE (OCP) einlesen, alle Dreiecke zu einer Huelle
-   vernaehen (Sewing).
-3. Geschlossene Huelle -> ein Volumenkoerper (das gesamte Netz wird
-   zu EINEM Koerper).
-4. Optional: benachbarte, exakt in der gleichen Ebene liegende
-   Dreiecke zu jeweils einer grossen echten Flaeche zusammenfassen
-   (UnifySameDomain). Das betrifft ausschliesslich ebene Bereiche.
-5. Zusaetzlich (rein informativ, siehe unten): gekruemmte
-   Netzbereiche werden per Regionenwachstum + RANSAC-Fit erkannt und
-   als Zylinder/Kugel gemeldet (Radius, grobe Guete). Diese Bereiche
-   bleiben aber als Facetten im Ergebnis erhalten.
-6. STEP schreiben. Zusaetzlich wird das Ergebnis fuer die
-   Web-Vorschau erneut trianguliert und als STL exportiert.
+2. Mit OpenCASCADE (OCP) einlesen: JEDES Dreieck wird zunaechst zu
+   einer eigenen ebenen Mini-Flaeche. Alle werden zu einer Huelle
+   vernaeht (Sewing) -> aus dem gesamten Netz wird EIN Koerper.
+3. Benachbarte Dreiecke werden nach Normalenwinkel zu Regionen
+   gruppiert (Regionenwachstum). Fuer jede nicht-ebene Region wird
+   parallel (mehrere Kerne) per RANSAC geprueft, ob sie zu einem
+   Zylinder oder einer Kugel passt (volle 360 Grad, keine
+   Teilausschnitte/Verrundungen - siehe Einschraenkung unten).
+4. Passt eine Region: die exakten analytischen Parameter (Achse,
+   Radius, Mittelpunkt bzw. Pol) werden direkt in eine ECHTE,
+   analytisch begrenzte STEP-Flaeche (Zylinder-/Kugelflaeche mit
+   UV-Grenzen) umgewandelt - nicht die ungenauen Facetten-Kanten
+   wiederverwendet. Diese Flaeche ersetzt die betroffenen
+   Dreiecksfacetten, alles wird mit angepasster Tolieranz neu vernaeht.
+5. Nach jeder Ersetzung wird das GESAMTERGEBNIS erneut geometrisch
+   geprueft (BRepCheck_Analyzer). Ist es ungueltig, wird die gesamte
+   Ersetzung verworfen und stattdessen auf die reine
+   Facetten-Loesung zurueckgefallen - es wird nie eine kaputte
+   STEP-Datei ausgeliefert.
+6. Verbleibende ebene Bereiche werden zusaetzlich zu grossen echten
+   Flaechen zusammengefasst (UnifySameDomain).
+7. STEP schreiben, zusaetzlich eine Vorschau-STL fuer die Webseite.
 
-Ehrlicher Stand zur Kruemmungs-Anfrage ("es sollen auch Kruemmungen
-umgewandelt werden"): Ich habe versucht, erkannte Zylinder/Kugeln
-automatisch durch echte gekruemmte STEP-Flaechen zu ersetzen (Naht-
-und Solid-Aufbau). Das ist in Tests an genau der Stelle gescheitert,
-an der auch kommerzielle Reverse-Engineering-Tools ihren groessten
-Aufwand betreiben: die Netzkanten am Rand einer gekruemmten Region
-liegen nur naeherungsweise auf der idealen Flaeche, und das saubere
-Zusammenfuegen (inkl. Naht bei zylindrischen Flaechen) erzeugte in
-meinen Tests ungueltige Geometrie. Um keine kaputten STEP-Dateien
-auszuliefern, bleibt das aktuell bei der Erkennung + Anzeige (Radius,
-Trefferguete) - siehe CHANGELOG "Ideen fuer spaeter" fuer den
-moeglichen naechsten Schritt.
+Einschraenkung: Nur VOLLSTAENDIGE Zylinder-/Kugelflaechen (360 Grad
+Abdeckung um die Achse/den Pol) werden ersetzt - das deckt Bohrungen,
+Wellen/Bolzen, Kuppeln/Woelbungen und volle Kugeln ab. Teilausschnitte,
+Verrundungen mit variablem Radius und freiformige Bereiche bleiben als
+Facetten erhalten (siehe CHANGELOG "Ideen fuer spaeter").
 """
 
 from __future__ import annotations
 
+import math
+import multiprocessing
 import traceback
+import warnings
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-
-import warnings
 
 import numpy as np
 import trimesh
 
 from OCP.StlAPI import StlAPI_Reader, StlAPI_Writer
-from OCP.TopoDS import TopoDS_Shape, TopoDS
-from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+from OCP.TopoDS import TopoDS_Shape, TopoDS, TopoDS_Shell, TopoDS_Builder
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid, BRepBuilderAPI_MakeFace
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.TopExp import TopExp_Explorer, TopExp
-from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX
+from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.Bnd import Bnd_Box
 from OCP.BRepBndLib import BRepBndLib
-from OCP.BRep import BRep_Tool
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.gp import gp_Pnt, gp_Dir, gp_Ax3, gp_Cylinder, gp_Sphere
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
 from OCP.collections import (
-    IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher as EdgeFaceMap,
+    IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap,
 )
 
 try:
@@ -69,13 +73,23 @@ except Exception:  # pragma: no cover - Erkennung ist optional
 
 ProgressCallback = Callable[[int, str], None]
 
+# Sehr grosse Netze: die (Python-seitige) Regionen-Analyse pro Facette
+# wuerde bei zig Millionen Dreiecken selbst mit O(n)-Algorithmen sehr
+# lange brauchen. Ab dieser Groesse wird sie automatisch uebersprungen
+# (Meldung an den Nutzer), Naehen + Volumenkoerper-Aufbau laeuft aber
+# immer, unabhaengig von der Groesse.
+MAX_FACES_FOR_CURVE_DETECTION = 300_000
+MIN_REGION_FACES = 8
+MAX_ANGULAR_GAP_DEG = 40.0  # groesste erlaubte Luecke -> sonst kein voller Umlauf
+
 
 @dataclass
 class ConversionSettings:
-    smoothing_iterations: int = 0          # 0-10, Laplace-Glaettung vor dem Vernaehen
-    decimate_percent: int = 100             # 10-100, 100 = keine Vereinfachung
-    merge_planar: bool = True               # ebene Facetten zu Flaechen zusammenfassen
-    detect_curved_shapes: bool = True       # Zylinder/Kugeln erkennen (nur Info)
+    smoothing_iterations: int = 0
+    decimate_percent: int = 100
+    merge_planar: bool = True
+    detect_curved_shapes: bool = True  # Zylinder/Kugeln erkennen UND ersetzen
+    worker_count: int = 0               # 0 = automatisch (alle Kerne)
 
     @classmethod
     def from_form(cls, form: dict) -> "ConversionSettings":
@@ -91,15 +105,17 @@ class ConversionSettings:
             decimate_percent=_int("decimate_percent", 100, 10, 100),
             merge_planar=str(form.get("merge_planar", "1")) not in ("0", "false", "False"),
             detect_curved_shapes=str(form.get("detect_curved_shapes", "1")) not in ("0", "false", "False"),
+            worker_count=_int("worker_count", 0, 0, 64),
         )
 
 
 @dataclass
 class DetectedShape:
-    kind: str            # "Zylinder" oder "Kugel"
+    kind: str
     radius: float
     inlier_ratio: float
     face_count: int
+    replaced: bool
 
 
 @dataclass
@@ -118,17 +134,8 @@ class ConversionError(Exception):
 
 
 # --------------------------------------------------------------------------
-# Hilfsfunktionen (OCCT)
+# Kleine OCCT-Hilfsfunktionen
 # --------------------------------------------------------------------------
-
-def _count_faces(shape) -> int:
-    exp = TopExp_Explorer(shape, TopAbs_FACE)
-    n = 0
-    while exp.More():
-        n += 1
-        exp.Next()
-    return n
-
 
 def _bounding_diagonal(shape) -> float:
     box = Bnd_Box()
@@ -139,162 +146,415 @@ def _bounding_diagonal(shape) -> float:
     return max((dx ** 2 + dy ** 2 + dz ** 2) ** 0.5, 1e-6)
 
 
-def _face_points(face) -> list:
-    pts, seen = [], set()
-    vexp = TopExp_Explorer(face, TopAbs_VERTEX)
-    while vexp.More():
-        v = TopoDS.Vertex(vexp.Current())
-        p = BRep_Tool.Pnt_s(v)
-        key = (round(p.X(), 6), round(p.Y(), 6), round(p.Z(), 6))
-        if key not in seen:
-            seen.add(key)
-            pts.append(np.array([p.X(), p.Y(), p.Z()]))
-        vexp.Next()
-    return pts
+def _index_faces(shape) -> list:
+    """Alle Faces EINMAL indiziert einsammeln (O(1)-Lookup ueber
+    FindIndex statt teurem paarweisem IsSame-Vergleich - wichtig
+    fuer die Performance bei grossen Netzen)."""
+    face_map = ShapeMap()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, face_map)
+    return [TopoDS.Face(face_map.FindKey(i)) for i in range(1, face_map.Extent() + 1)], face_map
 
 
-def _face_normal(pts: list) -> np.ndarray:
-    if len(pts) < 3:
-        return np.array([0.0, 0.0, 1.0])
-    n = np.cross(pts[1] - pts[0], pts[2] - pts[0])
-    norm = np.linalg.norm(n)
-    return n / norm if norm > 1e-12 else np.array([0.0, 0.0, 1.0])
+def _grow_regions_vectorized(mesh: "trimesh.Trimesh", angle_deg: float = 30.0) -> list:
+    """Schnelle, vektorisierte Regionenerkennung direkt auf dem Netz
+    (numpy/scipy) statt einzelner Python-Aufrufe pro OCCT-Face. Das
+    ist der Teil, der bei sehr grossen Netzen (Millionen Dreiecke)
+    ueberhaupt in vertretbarer Zeit durchlaufen kann."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    adjacency = mesh.face_adjacency
+    angles = mesh.face_adjacency_angles
+    n = len(mesh.faces)
+    if len(adjacency) == 0:
+        return [[i] for i in range(n)]
+
+    keep = angles < math.radians(angle_deg)
+    edges = adjacency[keep]
+    if len(edges) == 0:
+        return [[i] for i in range(n)]
+
+    data = np.ones(len(edges), dtype=bool)
+    graph = sp.coo_matrix((data, (edges[:, 0], edges[:, 1])), shape=(n, n))
+    n_components, labels = connected_components(graph, directed=False)
+
+    regions: dict = {}
+    for idx, label in enumerate(labels):
+        regions.setdefault(label, []).append(idx)
+    return list(regions.values())
 
 
-def _detect_curved_shapes(shape, min_faces: int = 20) -> list:
-    """Rein informative Erkennung von Zylinder-/Kugelregionen im Netz.
+def _angular_gap_ok(points: np.ndarray, center: np.ndarray, axis: np.ndarray) -> bool:
+    """Prueft, ob eine Region den Umfang um Achse/Pol vollstaendig
+    (360 Grad, ohne grosse Luecke) abdeckt. Nur dann darf sie durch
+    eine volle analytische Flaeche ersetzt werden - sonst wuerde die
+    neue Flaeche Material ausserhalb der eigentlichen Facette
+    hinzufuegen."""
+    rel = points - center
+    # zwei Hilfsachsen senkrecht zur Achse aufspannen
+    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, arbitrary)
+    u = u / np.linalg.norm(u)
+    v = np.cross(axis, u)
+    angles = np.arctan2(rel @ v, rel @ u)
+    angles = np.sort(angles)
+    gaps = np.diff(angles)
+    wrap_gap = (angles[0] + 2 * math.pi) - angles[-1]
+    max_gap = max(gaps.max() if len(gaps) else 0.0, wrap_gap)
+    return math.degrees(max_gap) < MAX_ANGULAR_GAP_DEG
 
-    Aendert die Geometrie NICHT - liefert nur eine Liste erkannter
-    Formen fuer die Anzeige auf der Weboberflaeche.
+
+def _fit_region(points: np.ndarray, thresh: float) -> Optional[dict]:
+    """Laeuft in einem separaten Prozess (multiprocessing) - bekommt
+    nur reine Zahlen (numpy-Array), keine OCCT-Objekte."""
+    if pyrsc is None or len(points) < 12:
+        return None
+
+    best = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            center, axis, radius, inliers = pyrsc.Cylinder().fit(points, thresh=thresh, maxIteration=250)
+            ratio = len(inliers) / len(points)
+            axis = np.array(axis, dtype=float)
+            axis /= np.linalg.norm(axis)
+            center = np.array(center, dtype=float)
+            if ratio > 0.85:
+                ts = (points - center) @ axis
+                best = {
+                    "kind": "Zylinder",
+                    "radius": float(radius),
+                    "inlier_ratio": ratio,
+                    "center": center,
+                    "axis": axis,
+                    "v_min": float(ts.min()),
+                    "v_max": float(ts.max()),
+                }
+        except Exception:
+            pass
+
+        try:
+            center_s, radius_s, inliers_s = pyrsc.Sphere().fit(points, thresh=thresh, maxIteration=250)
+            ratio_s = len(inliers_s) / len(points)
+            center_s = np.array(center_s, dtype=float)
+            if ratio_s > 0.85 and (best is None or ratio_s > best["inlier_ratio"]):
+                pole = (points.mean(axis=0) - center_s)
+                pole_norm = np.linalg.norm(pole)
+                if pole_norm > 1e-9:
+                    pole = pole / pole_norm
+                    rel = points - center_s
+                    rel_unit = rel / np.linalg.norm(rel, axis=1, keepdims=True)
+                    lat = np.arcsin(np.clip(rel_unit @ pole, -1.0, 1.0))
+                    best = {
+                        "kind": "Kugel",
+                        "radius": float(radius_s),
+                        "inlier_ratio": ratio_s,
+                        "center": center_s,
+                        "axis": pole,
+                        "v_min": float(lat.min()),
+                        "v_max": float(lat.max()),
+                    }
+        except Exception:
+            pass
+
+    return best
+
+
+def _build_analytic_face(fit: dict):
+    try:
+        center = fit["center"]
+        axis = fit["axis"]
+        radius = fit["radius"]
+
+        # Sonderfall vollstaendige Kugel (Breitengrad deckt fast den
+        # gesamten Pol-zu-Pol-Bereich ab): Eine per UV-Grenzen roh
+        # gebaute geschlossene Kugelflaeche wird von OCCT an der Naht
+        # nicht als "geschlossen" erkannt (BRepCheck meldet die Shell
+        # trotz gueltiger Einzelflaeche als offen). Das dedizierte
+        # OCCT-Primitiv BRepPrimAPI_MakeSphere baut dieselbe Geometrie
+        # mit korrekter Naht-/Pol-Topologie.
+        if fit["kind"] == "Kugel" and fit.get("_full_sphere"):
+            sphere_shape = BRepPrimAPI_MakeSphere(gp_Pnt(*center), radius).Shape()
+            fexp = TopExp_Explorer(sphere_shape, TopAbs_FACE)
+            if not fexp.More():
+                return None
+            face = TopoDS.Face(fexp.Current())
+            return face if BRepCheck_Analyzer(face).IsValid() else None
+
+        ax3 = gp_Ax3(gp_Pnt(*center), gp_Dir(*axis))
+        if fit["kind"] == "Zylinder":
+            surf = gp_Cylinder(ax3, radius)
+        else:
+            surf = gp_Sphere(ax3, radius)
+        maker = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * math.pi, fit["v_min"], fit["v_max"])
+        if not maker.IsDone():
+            return None
+        face = maker.Face()
+        if not BRepCheck_Analyzer(face).IsValid():
+            return None
+        return face
+    except Exception:
+        return None
+
+
+def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float, worker_count: int):
+    """Erkennt volle Zylinder-/Kugelbereiche und ersetzt sie durch
+    analytische STEP-Flaechen. Gibt (neues_shape_oder_None, liste_erkannter_formen)
+    zurueck. Bei jeglichem Zweifel an der Gueltigkeit wird None
+    zurueckgegeben (=Aufrufer faellt auf die reine Facetten-Loesung
+    zurueck) - es wird nie stillschweigend kaputte Geometrie erzeugt.
+
+    Die Erkennung (Regionen, Kandidaten-Fits, Verfeinerung) laeuft
+    komplett vektorisiert auf dem trimesh-Netz (numpy/scipy) - das
+    skaliert auch bei sehr grossen Netzen (Millionen Dreiecke).
+    OpenCASCADE (OCP) kommt erst fuer die eigentliche Ersetzung der
+    gefundenen Faces zum Einsatz, per direktem Index (STL-Datei und
+    trimesh-Netz haben dieselbe Dreiecksreihenfolge).
     """
     if pyrsc is None:
-        return []
+        return None, []
 
-    faces = []
-    exp = TopExp_Explorer(shape, TopAbs_FACE)
-    while exp.More():
-        faces.append(TopoDS.Face(exp.Current()))
-        exp.Next()
+    n_faces = len(mesh.faces)
+    if n_faces == 0 or n_faces > MAX_FACES_FOR_CURVE_DETECTION:
+        return None, []
 
-    if len(faces) > 20000:
-        # Bei sehr grossen Netzen lohnt sich die (recht teure) Analyse
-        # in dieser einfachen Implementierung nicht mehr - ueberspringen
-        # statt die Konvertierung unnoetig auszubremsen.
-        return []
+    triangles = mesh.triangles  # (n_faces, 3, 3)
+    regions = _grow_regions_vectorized(mesh)
 
-    face_pts = [_face_points(f) for f in faces]
-    normals = [_face_normal(p) for p in face_pts]
-
-    edge_face_map = EdgeFaceMap()
-    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
-
-    adjacency = {i: [] for i in range(len(faces))}
-    for i in range(1, edge_face_map.Extent() + 1):
-        flist = list(edge_face_map.FindFromIndex(i))
-        if len(flist) != 2:
-            continue
-        idxs = []
-        for fa in flist:
-            fa_face = TopoDS.Face(fa)
-            for j, ff in enumerate(faces):
-                if ff.IsSame(fa_face):
-                    idxs.append(j)
-                    break
-        if len(idxs) == 2:
-            adjacency[idxs[0]].append(idxs[1])
-            adjacency[idxs[1]].append(idxs[0])
-
-    angle_thresh = np.cos(np.radians(30))
-    visited = [False] * len(faces)
-    regions = []
-    for i in range(len(faces)):
-        if visited[i]:
-            continue
-        stack, region = [i], []
-        visited[i] = True
-        while stack:
-            cur = stack.pop()
-            region.append(cur)
-            for nb in adjacency[cur]:
-                if not visited[nb] and np.dot(normals[cur], normals[nb]) > angle_thresh:
-                    visited[nb] = True
-                    stack.append(nb)
-        regions.append(region)
-
-    detected = []
+    candidates = []  # (region_indices, points, thresh)
     for region in regions:
-        if len(region) < min_faces:
+        if len(region) < MIN_REGION_FACES:
             continue
+        pts = triangles[region].reshape(-1, 3)
 
-        pts = np.array([p for i in region for p in face_pts[i]])
-        if len(pts) < 12:
-            continue
-
-        region_extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
-        if region_extent < 1e-9:
-            continue
-
-        # Echte Kruemmung von blossem Glaettungs-/Vernetzungsrauschen
-        # unterscheiden: Abstand der Punkte von der besten Ausgleichs-
-        # ebene ("Pfeilhoehe") ins Verhaeltnis zur Ausdehnung der
-        # Region setzen. Nur bei spuerbarer Woelbung weitermachen -
-        # sonst wuerden leicht verrauschte, eigentlich ebene Bereiche
-        # (z. B. nach Glaettung) faelschlich als Zylinder/Kugel erkannt.
         centroid = pts.mean(axis=0)
-        _, _, vt = np.linalg.svd(pts - centroid)
+        _, _, vt = np.linalg.svd(pts - centroid, full_matrices=False)
         plane_normal = vt[-1]
         deviations = np.abs((pts - centroid) @ plane_normal)
         sagitta = float(deviations.max())
-        if sagitta < max(1e-3, region_extent * 0.05):
-            continue  # schon (fast) eben -> das erledigt UnifySameDomain
+        extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        if extent < 1e-9 or sagitta < max(1e-3, extent * 0.05):
+            continue  # praktisch eben -> das erledigt UnifySameDomain
 
-        # Toleranz an der Region selbst festmachen (nicht am ganzen
-        # Modell) - sonst werden bei grossen Bauteilen auch minimal
-        # verrauschte, eigentlich ebene Bereiche faelschlich als
-        # Rundung erkannt.
-        thresh = max(1e-3, region_extent * 5e-3)
-        best = None
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            try:
-                _, _, radius_cyl, inliers_cyl = pyrsc.Cylinder().fit(pts, thresh=thresh, maxIteration=200)
-                ratio_cyl = len(inliers_cyl) / len(pts)
-                if ratio_cyl > 0.85:
-                    best = DetectedShape("Zylinder", float(radius_cyl), ratio_cyl, len(region))
-            except Exception:
-                pass
+        thresh = max(1e-3, extent * 5e-3)
+        candidates.append((region, pts, thresh))
 
-            try:
-                _, radius_sph, inliers_sph = pyrsc.Sphere().fit(pts, thresh=thresh, maxIteration=200)
-                ratio_sph = len(inliers_sph) / len(pts)
-                if ratio_sph > 0.85 and (best is None or ratio_sph > best.inlier_ratio):
-                    best = DetectedShape("Kugel", float(radius_sph), ratio_sph, len(region))
-            except Exception:
-                pass
+    if not candidates:
+        return None, []
 
-        if best is not None:
-            detected.append(best)
+    workers = worker_count or max(1, multiprocessing.cpu_count() - 1)
+    workers = min(workers, len(candidates))
 
-    detected.sort(key=lambda d: -d.face_count)
-    return detected[:20]
+    fits = [None] * len(candidates)
+    if workers > 1:
+        try:
+            with multiprocessing.Pool(processes=workers) as pool:
+                async_results = [
+                    pool.apply_async(_fit_region, (pts, thresh)) for (_region, pts, thresh) in candidates
+                ]
+                fits = [r.get() for r in async_results]
+        except Exception:
+            # Fallback: seriell (z. B. eingefrorene .exe ohne funktionierendes
+            # multiprocessing-Spawning) - Korrektheit geht vor Tempo.
+            fits = [_fit_region(pts, thresh) for (_region, pts, thresh) in candidates]
+    else:
+        fits = [_fit_region(pts, thresh) for (_region, pts, thresh) in candidates]
+
+    detected = []
+    replaced_region_indices = set()
+    new_faces_for_regions = []
+
+    # Regionen mit sehr aehnlichen Fit-Parametern (gleiche Art, Radius,
+    # Achse/Pol, Mittelpunkt) zusammenfuehren, bevor Flaechen gebaut
+    # werden. Sonst kann z. B. eine glatte Kugel durch lokale
+    # Facetten-Unregelmaessigkeiten in zwei Regionen zerfallen, die
+    # unabhaengig voneinander (mit leicht verschiedenem Pol) je eine
+    # eigene Kugelflaeche bekommen wuerden - das kollidiert beim
+    # Zusammenbau und wuerde die ganze Ersetzung unnoetig scheitern
+    # lassen.
+    merged = []  # Liste von dicts: {"fit":..., "regions": [...], "points": [...]}
+    for (region, pts, _thresh), fit in zip(candidates, fits):
+        if fit is None:
+            continue
+        target = None
+        for m in merged:
+            mf = m["fit"]
+            if mf["kind"] != fit["kind"]:
+                continue
+            if abs(mf["radius"] - fit["radius"]) > 0.05 * max(mf["radius"], 1e-6):
+                continue
+            if np.linalg.norm(mf["center"] - fit["center"]) > 0.05 * max(fit["radius"], 1.0):
+                continue
+            # Bei Kugeln ist der "Pol" nur eine willkuerliche Hilfsachse
+            # fuer die UV-Parametrisierung (kein echtes geometrisches
+            # Unterscheidungsmerkmal) - Mittelpunkt+Radius reichen dort
+            # aus. Bei Zylindern MUSS die Achse dagegen uebereinstimmen.
+            if fit["kind"] == "Zylinder" and abs(abs(np.dot(mf["axis"], fit["axis"])) - 1.0) > 0.05:
+                continue
+            target = m
+            break
+        if target is None:
+            merged.append({"fit": fit, "regions": [region], "points": [pts]})
+        else:
+            target["regions"].append(region)
+            target["points"].append(pts)
+
+    max_needed_tol = sewing_tol
+    all_triangle_pts = triangles.reshape(n_faces, 9)  # fuer schnelle Verfeinerung (vektorisiert)
+    for m in merged:
+        fit = m["fit"]
+        all_pts = np.vstack(m["points"])
+
+        # Verfeinerung: Manche Facetten derselben durchgehenden
+        # Rundflaeche landen durch das Regionenwachstum in vielen
+        # kleinen, einzeln zu kleinen Grueppchen (z. B. bei stark
+        # unregelmaessiger Triangulierung) und werden nie als eigener
+        # Kandidat erkannt. Ohne diesen Schritt wuerden sie als
+        # Facetten stehen bleiben, WAEHREND gleichzeitig eine volle
+        # analytische Flaeche denselben Bereich abdeckt -> doppelte
+        # Geometrie. Deshalb: alle Faces im gesamten Modell pruefen,
+        # ob sie (innerhalb einer Toleranz) auf der gefundenen Flaeche
+        # liegen, und sie der Region hinzufuegen - komplett vektorisiert
+        # ueber alle Dreiecke gleichzeitig (kein Python-Loop pro Face).
+        already = set(idx for region in m["regions"] for idx in region)
+        candidate_mask = np.ones(n_faces, dtype=bool)
+        if already:
+            candidate_mask[list(already)] = False
+        pts_flat = triangles[candidate_mask].reshape(-1, 3, 3)
+        idx_map = np.where(candidate_mask)[0]
+
+        if len(pts_flat):
+            flat = pts_flat.reshape(-1, 3)
+            if fit["kind"] == "Zylinder":
+                rel = flat - fit["center"]
+                axial = rel @ fit["axis"]
+                radial_vec = rel - np.outer(axial, fit["axis"])
+                dist = np.abs(np.linalg.norm(radial_vec, axis=1) - fit["radius"])
+            else:
+                dist = np.abs(np.linalg.norm(flat - fit["center"], axis=1) - fit["radius"])
+            dist = dist.reshape(-1, 3).max(axis=1)
+            extra_mask = dist < max(1e-3, fit["radius"] * 5e-3)
+            extra_indices = idx_map[extra_mask].tolist()
+        else:
+            extra_indices = []
+
+        if extra_indices:
+            all_pts = np.vstack([all_pts, triangles[extra_indices].reshape(-1, 3)])
+        region_indices = list(already) + extra_indices
+
+        if fit["kind"] == "Zylinder":
+            ts = (all_pts - fit["center"]) @ fit["axis"]
+            fit["v_min"], fit["v_max"] = float(ts.min()), float(ts.max())
+        else:
+            rel = all_pts - fit["center"]
+            rel_unit = rel / np.linalg.norm(rel, axis=1, keepdims=True)
+            lat = np.arcsin(np.clip(rel_unit @ fit["axis"], -1.0, 1.0))
+            fit["v_min"], fit["v_max"] = float(lat.min()), float(lat.max())
+
+        # Die 360-Grad-Vollstaendigkeit erst JETZT pruefen - auf dem
+        # vollstaendigen, verfeinerten Punktsatz. Wuerde diese Pruefung
+        # schon vor der Verfeinerung laufen, koennte eine durch
+        # unregelmaessige Triangulierung (z. B. nach einer Boolean-
+        # Operation) in zwei Haelften zerfallene, aber zusammen volle
+        # Rundung faelschlich abgelehnt werden.
+        full_circle = _angular_gap_ok(all_pts, fit["center"], fit["axis"])
+        fit["_full_sphere"] = (
+            fit["kind"] == "Kugel"
+            and (fit["v_max"] - fit["v_min"]) > math.radians(150.0)
+            and len(region_indices) >= 0.98 * n_faces
+        )
+
+        new_face = _build_analytic_face(fit) if full_circle else None
+        detected.append(
+            DetectedShape(
+                kind=fit["kind"],
+                radius=fit["radius"],
+                inlier_ratio=fit["inlier_ratio"],
+                face_count=len(region_indices),
+                replaced=new_face is not None,
+            )
+        )
+        if new_face is not None:
+            replaced_region_indices.update(region_indices)
+            new_faces_for_regions.append(new_face)
+            extent = float(np.linalg.norm(all_pts.max(axis=0) - all_pts.min(axis=0)))
+            max_needed_tol = max(max_needed_tol, extent * 1e-2)
+
+    if not new_faces_for_regions:
+        return None, detected
+
+    faces, _face_map = _index_faces(shape)
+    if len(faces) != n_faces:
+        # Sicherheitsnetz: Sollte die Face-Reihenfolge zwischen STL und
+        # OCCT-Shape (z. B. durch abweichendes Sewing) doch einmal nicht
+        # 1:1 uebereinstimmen, lieber sauber abbrechen als versehentlich
+        # falsche Facetten zu ersetzen.
+        return None, detected
+
+    kept_faces = [faces[i] for i in range(n_faces) if i not in replaced_region_indices]
+
+    resew = BRepBuilderAPI_Sewing(max_needed_tol)
+    for f in kept_faces:
+        resew.Add(f)
+    for f in new_faces_for_regions:
+        resew.Add(f)
+    resew.Perform()
+    resewed = resew.SewedShape()
+
+    # Sonderfall: Wenn am Ende nur EINE (bereits in sich geschlossene)
+    # analytische Flaeche uebrig bleibt - z. B. eine komplette Kugel -
+    # liefert das Vernaehen direkt eine einzelne Face statt einer
+    # Shell zurueck. Dann muss die Shell manuell gebildet werden.
+    shells = []
+    if resewed.ShapeType() == TopAbs_FACE:
+        builder = TopoDS_Builder()
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+        builder.Add(shell, TopoDS.Face(resewed))
+        shells = [shell]
+    else:
+        shell_exp = TopExp_Explorer(resewed, TopAbs_SHELL)
+        while shell_exp.More():
+            shells.append(TopoDS.Shell(shell_exp.Current()))
+            shell_exp.Next()
+
+    if len(shells) != 1:
+        for d in detected:
+            d.replaced = False
+        return None, detected  # nicht mehr wasserdicht -> verwerfen
+
+    try:
+        solid = BRepBuilderAPI_MakeSolid(shells[0]).Solid()
+    except Exception:
+        for d in detected:
+            d.replaced = False
+        return None, detected
+
+    if not BRepCheck_Analyzer(solid).IsValid():
+        for d in detected:
+            d.replaced = False
+        return None, detected
+
+    return solid, detected
 
 
 # --------------------------------------------------------------------------
 # Mesh-Vorverarbeitung (trimesh)
 # --------------------------------------------------------------------------
 
-def _preprocess_mesh(input_path: str, settings: ConversionSettings, tmp_path: str, report) -> str:
-    if settings.smoothing_iterations <= 0 and settings.decimate_percent >= 100:
-        return input_path
-
+def _preprocess_mesh(input_path: str, settings: ConversionSettings, tmp_path: str, report):
+    """Laedt das Netz einmal per trimesh, wendet Glaettung/Vereinfachung
+    an und bereitet es (falls noetig) fuer die Kruemmungserkennung vor.
+    Gibt (pfad_der_zwischen_stl, mesh) zurueck - das mesh-Objekt wird
+    direkt fuer die (vektorisierte) Regionenerkennung weiterverwendet,
+    damit die Datei nicht ein zweites Mal eingelesen werden muss.
+    """
     prefix = "Netz wird vorbereitet"
+    report(4, f"{prefix}: lade Netz ...")
     mesh = trimesh.load(input_path, force="mesh")
 
     if settings.smoothing_iterations > 0:
         report(6, f"{prefix}: Glaettung ({settings.smoothing_iterations}x) ...")
-        # Taubin- statt reiner Laplace-Glaettung: entfernt Netzrauschen,
-        # ohne das Modell sichtbar zu schrumpfen oder eigentlich ebene
-        # Bereiche (z. B. Deckflaechen) in Woelbungen zu verwandeln.
         trimesh.smoothing.filter_taubin(mesh, iterations=settings.smoothing_iterations)
 
     if settings.decimate_percent < 100:
@@ -302,8 +562,32 @@ def _preprocess_mesh(input_path: str, settings: ConversionSettings, tmp_path: st
         report(9, f"{prefix}: Vereinfachung auf {settings.decimate_percent}% ({target} Dreiecke) ...")
         mesh = mesh.simplify_quadric_decimation(face_count=target)
 
+    # Die Normalen-Reparatur (fuer eine zuverlaessige Regionenerkennung)
+    # nur durchfuehren, wenn die Kruemmungserkennung ueberhaupt laeuft
+    # und das Netz nicht zu riesig ist - bei sehr grossen Netzen, bei
+    # denen die Erkennung ohnehin uebersprungen wird, spart das
+    # spuerbar Zeit. Manche STL-Quellen (z. B. Boolean-Operationen
+    # mancher CAD-Tools) liefern Netze mit uneinheitlicher Dreiecks-
+    # Wicklung: benachbarte Facetten zeigen dann mit entgegengesetzter
+    # Normale nach aussen. Das ist fuer den reinen Volumenkoerper meist
+    # harmlos, bringt aber die Regionenerkennung (Gruppierung nach
+    # Normalenwinkel) durcheinander, weil eigentlich glatt benachbarte
+    # Facetten dann wie eine scharfe Kante aussehen.
+    if settings.detect_curved_shapes and len(mesh.faces) <= MAX_FACES_FOR_CURVE_DETECTION:
+        report(11, f"{prefix}: pruefe Facettenausrichtung ...")
+        trimesh.repair.fix_normals(mesh, multibody=True)
+
     mesh.export(tmp_path)
-    return tmp_path
+    return tmp_path, mesh
+
+
+def _count_faces(shape) -> int:
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    n = 0
+    while exp.More():
+        n += 1
+        exp.Next()
+    return n
 
 
 # --------------------------------------------------------------------------
@@ -326,11 +610,7 @@ def convert_stl_to_step(
     try:
         report(2, "Lese STL-Datei ein ...")
 
-        preprocessed_path = input_path
-        if settings.smoothing_iterations > 0 or settings.decimate_percent < 100:
-            preprocessed_path = _preprocess_mesh(
-                input_path, settings, input_path + "_pre.stl", report
-            )
+        preprocessed_path, mesh = _preprocess_mesh(input_path, settings, input_path + "_pre.stl", report)
 
         shape = TopoDS_Shape()
         reader = StlAPI_Reader()
@@ -341,7 +621,7 @@ def convert_stl_to_step(
         if faces_before == 0:
             raise ConversionError("Die STL-Datei enthaelt keine Dreiecke.")
 
-        report(15, f"Netz eingelesen ({faces_before} Dreiecke). Vernaehe Facetten ...")
+        report(12, f"Netz eingelesen ({faces_before} Dreiecke). Vernaehe Facetten ...")
 
         tol = _bounding_diagonal(shape) * 1e-5
         sewing = BRepBuilderAPI_Sewing(tol)
@@ -349,7 +629,7 @@ def convert_stl_to_step(
         sewing.Perform()
         sewed = sewing.SewedShape()
 
-        report(35, "Suche geschlossene Huelle ...")
+        report(28, "Suche geschlossene Huelle ...")
         exp = TopExp_Explorer(sewed, TopAbs_SHELL)
         shells = []
         while exp.More():
@@ -360,7 +640,7 @@ def convert_stl_to_step(
         base_shape = sewed
 
         if len(shells) == 1:
-            report(48, "Huelle geschlossen - erzeuge Volumenkoerper (ein Koerper) ...")
+            report(38, "Huelle geschlossen - erzeuge Volumenkoerper (ein Koerper) ...")
             try:
                 maker = BRepBuilderAPI_MakeSolid(shells[0])
                 if maker.IsDone():
@@ -372,24 +652,31 @@ def convert_stl_to_step(
                 pass
         else:
             report(
-                48,
+                38,
                 f"Netz ist nicht wasserdicht ({len(shells)} Teil-Huellen) - "
                 "Ergebnis wird als offene Flaeche gespeichert.",
             )
 
         detected_shapes = []
-        if settings.detect_curved_shapes:
-            report(58, "Erkenne gekruemmte Bereiche (Zylinder/Kugeln) ...")
+        result_shape = base_shape
+
+        if settings.detect_curved_shapes and is_solid and len(mesh.faces) == faces_before:
+            report(50, "Suche volle Zylinder-/Kugelbereiche (mehrere Kerne) ...")
             try:
-                detected_shapes = _detect_curved_shapes(base_shape)
+                replaced_solid, detected_shapes = _detect_and_replace_curves(
+                    base_shape, mesh, tol, settings.worker_count
+                )
+                if replaced_solid is not None:
+                    result_shape = replaced_solid
+                    n_replaced = sum(1 for d in detected_shapes if d.replaced)
+                    report(68, f"{n_replaced} Rundung(en) durch echte STEP-Flaechen ersetzt.")
             except Exception:
                 traceback.print_exc()
                 detected_shapes = []
 
-        result_shape = base_shape
         if settings.merge_planar:
-            report(72, "Fasse ebene Bereiche zu grossen Flaechen zusammen (Flaechenrueckfuehrung) ...")
-            unify = ShapeUpgrade_UnifySameDomain(base_shape, True, True, True)
+            report(78, "Fasse ebene Bereiche zu grossen Flaechen zusammen (Flaechenrueckfuehrung) ...")
+            unify = ShapeUpgrade_UnifySameDomain(result_shape, True, True, True)
             unify.SetLinearTolerance(tol)
             unify.SetAngularTolerance(1e-3)
             unify.Build()
@@ -399,12 +686,12 @@ def convert_stl_to_step(
 
         volume = None
         if is_solid:
-            report(85, "Pruefe Volumenkoerper ...")
+            report(88, "Pruefe Volumenkoerper ...")
             props = GProp_GProps()
             BRepGProp.VolumeProperties_s(result_shape, props)
             volume = props.Mass()
 
-        report(90, "Schreibe STEP-Datei ...")
+        report(92, "Schreibe STEP-Datei ...")
         writer = STEPControl_Writer()
         writer.Transfer(result_shape, STEPControl_AsIs)
         status = writer.Write(output_path)

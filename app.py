@@ -110,7 +110,12 @@ def _run_conversion(job_id: str, input_path: str, output_path: str, preview_path
             volume=result.volume,
             preview_path=result.preview_path,
             detected_shapes=[
-                {"kind": s.kind, "radius": round(s.radius, 3), "inlier_ratio": round(s.inlier_ratio, 2)}
+                {
+                    "kind": s.kind,
+                    "radius": round(s.radius, 3),
+                    "inlier_ratio": round(s.inlier_ratio, 2),
+                    "replaced": s.replaced,
+                }
                 for s in result.detected_shapes
             ],
         )
