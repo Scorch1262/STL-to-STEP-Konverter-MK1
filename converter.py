@@ -67,11 +67,11 @@ from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeWire,
 )
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
+from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs, STEPControl_Reader
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.TopExp import TopExp_Explorer, TopExp
 from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE, TopAbs_VERTEX, TopAbs_EDGE
-from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepCheck import BRepCheck_Analyzer, BRepCheck_Shell, BRepCheck_Status
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.Bnd import Bnd_Box
@@ -486,45 +486,22 @@ def _order_edge_chain(edges: list) -> list:
 
 
 def _shell_has_open_edges(shell) -> bool:
-    """Prueft gezielt auf echte Luecken (Kanten, die nicht zu genau
-    zwei Flaechen gehoeren) - das ist die konkrete Ursache eines
-    sichtbaren "Lochs" im Ergebnis. Bewusst KEINE volle
-    BRepCheck_Analyzer-Pruefung (die auch wegen kosmetischer
-    Toleranzfragen anschlaegt, ohne dass ein sichtbarer Fehler
-    entsteht) - nur dieser eine, eindeutig sichtbare Fehlerfall wird
-    abgefangen.
+    """Prueft gezielt, ob die Huelle tatsaechlich geschlossen ist (kein
+    Loch) - OHNE die volle, oft zu strenge BRepCheck_Analyzer-Pruefung
+    zu verwenden (die auch wegen rein kosmetischer Toleranzfragen
+    anschlaegt, ohne dass ein sichtbarer Fehler vorliegt).
 
-    Entartete Kanten (Pole einer Kugel-/Zylinderflaeche) und
-    Naht-Kanten periodischer Flaechen (z. B. der Laengsgrad-Uebergang
-    einer vollen Kugel, von derselben Flaeche zweimal referenziert)
-    sind KEINE Luecken, obwohl sie in der einfachen Referenzzaehlung
-    ungewoehnlich aussehen koennen - sie werden deshalb ausgenommen.
+    Nutzt das eingebaute BRepCheck_Shell.Closed() statt einer eigenen
+    Kantenzaehlung: eine erste, selbstgeschriebene Kantenzaehlung mit
+    Sonderfaellen fuer Pole/Nahtkanten (periodische Flaechen wie eine
+    volle Kugel) erwies sich in der Praxis als fehleranfaellig und hat
+    ein echtes Loch nicht zuverlaessig erkannt. BRepCheck_Shell.Closed()
+    wurde gezielt gegen beide Faelle getestet: erkennt ein absichtlich
+    kaputtes Modell (fehlende Flaeche) korrekt als nicht geschlossen,
+    und stuft eine volle Kugel (periodische Naht) korrekt als
+    geschlossen ein.
     """
-    edge_face_map = EdgeFaceMap()
-    TopExp.MapShapesAndAncestors_s(shell, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
-    for i in range(1, edge_face_map.Extent() + 1):
-        edge = edge_face_map.FindKey(i)
-        if BRep_Tool.Degenerated_s(TopoDS.Edge(edge)):
-            continue  # Pol einer Kugel/eines Kegels - kein Fehler
-        faces_here = list(edge_face_map.FindFromIndex(i))
-        if len(faces_here) == 2:
-            continue
-        if len(faces_here) == 1:
-            # Kommt diese Kante als Naht (zweimal) auf DERSELBEN Flaeche
-            # vor (z. B. der 0/360-Grad-Uebergang einer vollen Kugel-
-            # oder Zylinderflaeche)? Dann ist sie topologisch bereits
-            # korrekt geschlossen, auch wenn die einfache Ancestor-Map
-            # sie nur einmal auflistet.
-            fexp = TopExp_Explorer(faces_here[0], TopAbs_EDGE)
-            count_on_face = 0
-            while fexp.More():
-                if TopoDS.Edge(fexp.Current()).IsSame(TopoDS.Edge(edge)):
-                    count_on_face += 1
-                fexp.Next()
-            if count_on_face >= 2:
-                continue  # Naht-Kante, kein Loch
-        return True
-    return False
+    return BRepCheck_Shell(shell).Closed() != BRepCheck_Status.BRepCheck_NoError
 
 
 def _build_freeform_filling_patch(boundary_edges: list, interior_points: np.ndarray):
@@ -1334,6 +1311,36 @@ def convert_stl_to_step(
         status = writer.Write(output_path)
         if status != IFSelect_RetDone:
             raise ConversionError("STEP-Datei konnte nicht geschrieben werden.")
+
+        if is_solid:
+            # Letzte, unabhaengige Absicherung vor der Auslieferung: die
+            # gerade geschriebene Datei ueber einen komplett separaten
+            # Lese-Pfad erneut einlesen und mit der vollen, strengen
+            # Pruefung kontrollieren. Das faengt Faelle ab, in denen die
+            # (bewusst weniger strenge) Pruefung waehrend des Aufbaus
+            # ein Problem uebersehen hat - lieber ein klarer Fehler als
+            # eine kaputte Datei, die sich nicht oeffnen laesst.
+            report(96, "Prüfe geschriebene STEP-Datei unabhängig nach ...")
+            try:
+                verify_reader = STEPControl_Reader()
+                if verify_reader.ReadFile(output_path) == IFSelect_RetDone:
+                    verify_reader.TransferRoots()
+                    verify_shape = verify_reader.OneShape()
+                    if not BRepCheck_Analyzer(verify_shape).IsValid():
+                        raise ConversionError(
+                            "Die erzeugte STEP-Datei hat die abschliessende, unabhaengige "
+                            "Pruefung nicht bestanden (das Ergebnis waere fehlerhaft, z. B. "
+                            "mit einem Loch). Bitte die Einstellungen (z. B. Scan-Glättung "
+                            "deaktivieren) aendern und erneut versuchen."
+                        )
+            except ConversionError:
+                raise
+            except Exception:
+                # Die Nachpruefung selbst konnte nicht durchgefuehrt
+                # werden (z. B. Lesefehler) - das ist kein Beweis fuer
+                # einen Fehler in der Datei, deshalb hier nicht
+                # abbrechen.
+                pass
 
         if preview_path:
             report(97, "Erzeuge Vorschau ...")

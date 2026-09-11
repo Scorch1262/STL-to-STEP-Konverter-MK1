@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.3 - Fix: Lueckenpruefung war selbst fehlerhaft
+- **Ursache des in 1.4.2 weiterhin gemeldeten Lochs gefunden:** Die
+  in 1.4.2 eingefuehrte, selbstgeschriebene Lueckenpruefung (Kanten
+  zaehlen + Sonderfaelle fuer Pole und Nahtkanten periodischer
+  Flaechen von Hand behandeln) hatte selbst einen blinden Fleck und
+  hat ein echtes Loch nicht zuverlaessig erkannt.
+- **Fix:** Die eigene Kantenzaehlung wurde durch OpenCASCADEs
+  eingebaute Pruefung `BRepCheck_Shell.Closed()` ersetzt - gezielt
+  gegen beide kritischen Faelle getestet: erkennt ein absichtlich
+  kaputtes Testmodell (fehlende Flaeche) korrekt als nicht
+  geschlossen, UND stuft eine volle Kugel (periodische Naht) weiterhin
+  korrekt als geschlossen ein (kein erneutes Fehlalarm-Risiko wie bei
+  der vorherigen Handimplementierung).
+- **Zusaetzlich unabhaengig verifiziert:** Alle erzeugten STEP-Dateien
+  wurden ueber einen komplett separaten Lese-Pfad (STEPControl_Reader)
+  erneut eingelesen und mit der vollen, strengen BRepCheck_Analyzer-
+  Pruefung bestaetigt - inklusive der Datei, die ueber die Web-API
+  heruntergeladen wird.
+
 ## 1.4.2 - Fix: Loch im Modell + ganze Regionen statt Facetten-Rand
 - **Kritischer Fix:** Die in 1.4.1 komplett entfernte Gueltigkeits-
   pruefung hat tatsaechlich kaputte Geometrie durchgelassen (sichtbares

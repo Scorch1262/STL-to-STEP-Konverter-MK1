@@ -42,10 +42,12 @@ Grenzen.
 **Zur Absicherung:** Nur wenn sich am Ende gar kein einzelner,
 wasserdichter Volumenkörper zusammenbauen lässt, wird auf die reine
 Facetten-Lösung zurückgefallen. Geprüft wird dabei gezielt auf echte
-Löcher (eine Kante, die nicht zu genau zwei Flächen gehört) - nicht
-mehr per voller, oft zu strenger OCCT-Rundumprüfung, die auch wegen
-rein kosmetischer Toleranzfragen angeschlagen hätte, ohne dass ein
-tatsächlicher Fehler im Ergebnis vorlag.
+Löcher (über OpenCASCADEs eingebaute `BRepCheck_Shell.Closed()`-
+Prüfung) - nicht mehr per voller, oft zu strenger OCCT-Rundumprüfung,
+die auch wegen rein kosmetischer Toleranzfragen angeschlagen hätte,
+ohne dass ein tatsächlicher Fehler im Ergebnis vorlag. Jede erzeugte
+STEP-Datei wird zusätzlich über einen unabhängigen Lese-Pfad erneut
+eingelesen und mit der vollen, strengen Prüfung gegenkontrolliert.
 
 ## Einstellungen auf der Weboberfläche
 
