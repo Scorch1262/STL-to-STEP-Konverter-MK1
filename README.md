@@ -110,14 +110,24 @@ Während des Aufbaus selbst wird jetzt außerdem laufend der Fortschritt
 gemeldet ("Facette X von Y"), damit auch eine mehrminütige Umwandlung
 sichtbar voranschreitet statt wie eingefroren zu wirken.
 
-## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern
+## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern / Speicherproblemen
 
-Die Umwandlung läuft in einem eigenen Server-Thread und damit
-unabhängig davon, ob der Browser-Tab gerade sichtbar ist. Der
-Live-Fortschritt (SSE) wird per Heartbeat abgesichert; bricht die
-Verbindung trotzdem ab, übernimmt automatisch eine Status-Abfrage im
-Hintergrund. Die Job-ID wird im Browser gespeichert, sodass ein
+Die Umwandlung läuft in einem **eigenen Prozess** (nicht nur einem
+Thread) und damit unabhängig davon, ob der Browser-Tab gerade sichtbar
+ist. Der Live-Fortschritt (SSE) wird per Heartbeat abgesichert; bricht
+die Verbindung trotzdem ab, übernimmt automatisch eine Status-Abfrage
+im Hintergrund. Die Job-ID wird im Browser gespeichert, sodass ein
 Neuladen der Seite den laufenden bzw. fertigen Auftrag wiederfindet.
+
+Die Prozess-Isolation ist bewusst gewählt: Bei sehr großen Dateien kann
+die Umwandlung mehrere GB Arbeitsspeicher benötigen. Liefe das im
+selben Prozess wie der Webserver, könnte (a) wiederholt angefragter
+Speicher bei mehreren Versuchen hintereinander nicht zuverlässig wieder
+freigegeben werden, und (b) ein tatsächliches Out-of-Memory den
+**kompletten Webserver** abstürzen lassen. Als eigener Prozess wird der
+Speicher beim Beenden garantiert zurückgegeben, und ein Absturz betrifft
+immer nur den einen Auftrag - der Webserver selbst bleibt erreichbar
+und meldet dem Nutzer einen klaren Fehler.
 
 ## 3D-Vorschau
 

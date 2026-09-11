@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.2 - Fix: Speichergrenze schrumpfte bei wiederholten Versuchen
+- **Architektur-Fix:** Die eigentliche Umwandlung laeuft jetzt in
+  einem EIGENEN Prozess statt nur in einem Thread innerhalb des
+  Webserver-Prozesses. Zwei konkrete Probleme werden dadurch behoben:
+  1. Bei wiederholten Versuchen mit grossen Dateien konnte die
+     angezeigte "verfuegbare" Dreiecksgrenze von Versuch zu Versuch
+     kleiner werden - der Webserver-Prozess gab Speicher nicht
+     zuverlaessig wieder her. Als eigener Prozess wird der komplette
+     Speicher beim Beenden garantiert an das Betriebssystem
+     zurueckgegeben; der Webserver selbst bleibt jetzt nachweislich
+     stabil (eigene Messung: 334 MB vor drei grossen Testversuchen,
+     336 MB danach).
+  2. Schwerwiegender: Wuerde eine Umwandlung trotz der Schaetzung
+     tatsaechlich zu einem Out-of-Memory fuehren, hat das
+     Betriebssystem bisher den KOMPLETTEN Webserver beendet (alle
+     Threads teilen sich einen Prozess) - die ganze Anwendung waere
+     abgestuerzt. Jetzt betrifft ein solcher Absturz nur den einen
+     Auftrag; der Webserver selbst laeuft unbeeintraechtigt weiter und
+     meldet dem Nutzer einen klaren Fehler statt komplett unerreichbar
+     zu werden.
+- Erkennt zusaetzlich den Fall, dass der Umwandlungs-Prozess ohne
+  Abschlussmeldung endet (z. B. durch ein hartes Betriebssystem-Limit),
+  und meldet dann eine klare Fehlermeldung statt den Auftrag unendlich
+  in "laeuft" haengen zu lassen.
+
 ## 1.3.1 - Fix: Programm haengt bei sehr grossen Dateien
 - **Ursache 1 (der eigentliche Haenger) behoben:** Die Facetten-
   Normalen-Reparatur wurde bisher IMMER ausgefuehrt, auch wenn die

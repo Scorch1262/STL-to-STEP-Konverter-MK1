@@ -24,7 +24,9 @@ STRG+C) wieder beenden kann.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
+import queue as queue_module
 import sys
 import tempfile
 import threading
@@ -91,38 +93,126 @@ def _job_public_state(job: dict) -> dict:
     return payload
 
 
-def _run_conversion(job_id: str, input_path: str, output_path: str, preview_path: str, settings: ConversionSettings) -> None:
+def _conversion_worker_process(
+    input_path: str,
+    output_path: str,
+    preview_path: str,
+    settings: ConversionSettings,
+    progress_queue: "multiprocessing.Queue",
+) -> None:
+    """Laeuft in einem EIGENEN Prozess (nicht nur einem Thread).
+
+    Grund: Der Flaechen-/Volumenkoerper-Aufbau kann bei grossen Netzen
+    mehrere GB Arbeitsspeicher belegen. In einem gewoehnlichen Thread
+    wuerde dieser Speicher Teil des langlebigen Server-Prozesses bleiben
+    (und bei wiederholten Versuchen mit grossen Dateien immer weiter
+    anwachsen, ohne zuverlaessig wieder freigegeben zu werden) - UND ein
+    tatsaechliches Out-of-Memory wuerde vom Betriebssystem den GESAMTEN
+    Serverprozess beenden, nicht nur die eine Umwandlung. Als eigener
+    Prozess wird der komplette Speicher beim Beenden garantiert an das
+    Betriebssystem zurueckgegeben, und ein harter Absturz (z. B. durch
+    OOM) betrifft nur diesen einen Auftrag - der Webserver selbst laeuft
+    unbeeintraechtigt weiter.
+    """
+
     def progress_cb(pct: int, message: str) -> None:
-        _set_job(job_id, progress=pct, message=message)
+        try:
+            progress_queue.put(("progress", pct, message))
+        except Exception:
+            pass
 
     try:
         result = convert_stl_to_step(
             input_path, output_path, preview_path=preview_path, settings=settings, progress_cb=progress_cb
         )
+        progress_queue.put((
+            "done",
+            {
+                "is_solid": result.is_solid,
+                "face_count_before": result.face_count_before,
+                "face_count_after": result.face_count_after,
+                "volume": result.volume,
+                "preview_path": result.preview_path,
+                "detected_shapes": [
+                    {
+                        "kind": s.kind,
+                        "radius": round(s.radius, 3),
+                        "inlier_ratio": round(s.inlier_ratio, 2),
+                        "replaced": s.replaced,
+                    }
+                    for s in result.detected_shapes
+                ],
+            },
+        ))
+    except ConversionError as exc:
+        progress_queue.put(("error", str(exc)))
+    except Exception as exc:  # Sicherheitsnetz, damit der Prozess nie "stumm" stirbt
+        progress_queue.put(("error", f"Unerwarteter Fehler: {exc}"))
+
+
+def _run_conversion(job_id: str, input_path: str, output_path: str, preview_path: str, settings: ConversionSettings) -> None:
+    """Leichter Aufseher-Thread im Hauptprozess: startet die eigentliche
+    Umwandlung als eigenen Prozess und reicht dessen Fortschritts-
+    meldungen an JOBS weiter. Haelt selbst keine grossen Datenmengen im
+    Speicher."""
+    progress_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+    process = multiprocessing.Process(
+        target=_conversion_worker_process,
+        args=(input_path, output_path, preview_path, settings, progress_queue),
+    )
+    process.start()
+
+    finished = False
+    try:
+        while True:
+            try:
+                item = progress_queue.get(timeout=1.0)
+            except queue_module.Empty:
+                if not process.is_alive():
+                    break
+                continue
+
+            kind = item[0]
+            if kind == "progress":
+                _, pct, message = item
+                _set_job(job_id, progress=pct, message=message)
+            elif kind == "done":
+                _, data = item
+                _set_job(
+                    job_id,
+                    status="done",
+                    progress=100,
+                    message="Umwandlung abgeschlossen.",
+                    **data,
+                )
+                finished = True
+                break
+            elif kind == "error":
+                _, message = item
+                _set_job(job_id, status="error", message=message)
+                finished = True
+                break
+    finally:
+        process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    if not finished:
+        # Der Prozess wurde beendet, ohne eine abschliessende Meldung zu
+        # schicken - typischerweise ein harter Abbruch durch das
+        # Betriebssystem (z. B. nicht genug Arbeitsspeicher trotz der
+        # vorherigen Schaetzung). Der Webserver selbst laeuft weiter;
+        # nur dieser eine Auftrag wird als fehlgeschlagen markiert.
         _set_job(
             job_id,
-            status="done",
-            progress=100,
-            message="Umwandlung abgeschlossen.",
-            is_solid=result.is_solid,
-            face_count_before=result.face_count_before,
-            face_count_after=result.face_count_after,
-            volume=result.volume,
-            preview_path=result.preview_path,
-            detected_shapes=[
-                {
-                    "kind": s.kind,
-                    "radius": round(s.radius, 3),
-                    "inlier_ratio": round(s.inlier_ratio, 2),
-                    "replaced": s.replaced,
-                }
-                for s in result.detected_shapes
-            ],
+            status="error",
+            message=(
+                "Die Umwandlung wurde unerwartet beendet (vermutlich nicht genug "
+                "Arbeitsspeicher). Bitte die Einstellung \"Vereinfachung\" "
+                "(Dezimierung) staerker nutzen und erneut versuchen."
+            ),
         )
-    except ConversionError as exc:
-        _set_job(job_id, status="error", message=str(exc))
-    except Exception as exc:  # Sicherheitsnetz, damit der Thread nie "stumm" stirbt
-        _set_job(job_id, status="error", message=f"Unerwarteter Fehler: {exc}")
     # Eingabedatei bewusst NICHT sofort loeschen: die "Vorher"-Vorschau
     # auf der Webseite liest sie ggf. noch, solange der Job im Speicher ist.
 
@@ -276,4 +366,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Noetig, damit multiprocessing.Process in einer per PyInstaller
+    # gebauten .exe unter Windows nicht in eine Endlosschleife laeuft
+    # (jeder neue Prozess wuerde sonst das ganze Programm erneut von
+    # vorne starten). Muss die allererste Anweisung im Einstiegspunkt
+    # sein.
+    multiprocessing.freeze_support()
     main()
