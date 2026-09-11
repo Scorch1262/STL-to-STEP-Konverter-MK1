@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.1 - Sicherheitspruefung entfernt + Vorschau-Schattierung korrigiert
+- **Auf Nutzerwunsch entfernt:** Die abschliessende, sehr strikte
+  BRepCheck_Analyzer-Gueltigkeitspruefung nach einer Zylinder-/Kugel-
+  oder Glaettungs-Ersetzung wurde entfernt. Sie hat bisher
+  Ersetzungsversuche komplett verworfen, ohne dass sichtbar wurde, was
+  dabei entstanden waere - dadurch liess sich nicht beurteilen, ob das
+  Ergebnis trotz formaler OCCT-Beanstandung praktisch besser gewesen
+  waere als die reinen Facetten. Das Ergebnis wird jetzt immer
+  geliefert, sobald es sich zu einem einzigen Volumenkoerper
+  zusammenbauen liess (weiterhin verworfen wird nur, wenn gar kein
+  einzelner, wasserdichter Koerper entstehen konnte).
+- **Vorschau-Bug behoben:** Die 3D-Vorschau im Browser rendert die
+  STEP-Datei zwangslaeufig als neu trianguliertes Dreiecksnetz (Three.js
+  kann keine echten Flaechen zeichnen) - bisher wurde dafuer immer
+  FLACH schattiert (jede Facette einzeln sichtbar), selbst wenn die
+  STEP-Datei tatsaechlich eine echte glatte Flaeche enthielt. Das liess
+  ein erfolgreich geglaettetes Ergebnis in der Vorschau faelschlich
+  weiterhin facettiert aussehen. Die "Nachher"-Ansicht wird jetzt glatt
+  schattiert (interpolierte Normalen), die "Vorher"-Ansicht (rohes STL)
+  bleibt bewusst flach schattiert, um die tatsaechliche Facettenstruktur
+  ehrlich zu zeigen.
+
 ## 1.4.0 - Scan-Glaettung funktioniert jetzt wirklich
 - **Durchbruch:** Die "Scan-Oberflaeche glaetten"-Einstellung (seit
   1.4.0 nicht mehr experimentell) erzeugt jetzt zuverlaessig eine

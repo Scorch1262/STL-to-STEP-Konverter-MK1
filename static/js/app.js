@@ -104,7 +104,7 @@ function animate() {
   if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
-function loadPreview(url, { fromArrayBuffer } = {}) {
+function loadPreview(url, { fromArrayBuffer, smooth } = {}) {
   ensureViewer();
   const loader = new STLLoader();
 
@@ -120,16 +120,24 @@ function loadPreview(url, { fromArrayBuffer } = {}) {
       color: 0x00c389,
       metalness: 0.15,
       roughness: 0.55,
-      flatShading: true,
+      // Die "Vorher"-Ansicht (rohes STL) zeigt bewusst flach schattierte
+      // Facetten, damit die tatsaechliche Dreiecksstruktur sichtbar
+      // bleibt. Die "Nachher"-Ansicht (STEP-Ergebnis) wird dagegen glatt
+      // schattiert (interpolierte Normalen) - sonst wuerde selbst eine
+      // echte, analytisch glatte Flaeche in der (immer neu triangulierten)
+      // 3D-Vorschau faelschlich facettiert aussehen, obwohl die
+      // STEP-Datei tatsaechlich eine glatte Flaeche enthaelt.
+      flatShading: !smooth,
     });
     const solidMesh = new THREE.Mesh(geometry, material);
 
     // Kanten der einzelnen Facetten/Flaechen als Overlay einzeichnen,
     // damit man Dreiecksstruktur (STL) bzw. Flaechengrenzen (STEP-
-    // Vorschau) erkennen kann. thresholdAngle filtert reines
-    // Facettenrauschen einer glatten Kruemmung nicht heraus - genau
-    // das soll ja sichtbar sein.
-    const edges = new THREE.EdgesGeometry(geometry, 1);
+    // Vorschau) erkennen kann. Bei der glatt schattierten Nachher-
+    // Ansicht nur noch echte Flaechen-/Kantengrenzen zeigen (grosser
+    // Schwellwinkel), nicht das Facettenraster der Neu-Triangulierung.
+    const edgeThreshold = smooth ? 25 : 1;
+    const edges = new THREE.EdgesGeometry(geometry, edgeThreshold);
     const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x0a2318, transparent: true, opacity: 0.35 });
     const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
     solidMesh.add(edgeLines);
@@ -173,7 +181,7 @@ tabBefore.addEventListener("click", () => {
 tabAfter.addEventListener("click", () => {
   if (tabAfter.disabled) return;
   setActiveTab(tabAfter);
-  loadPreview(`/api/preview/output/${currentJobId}`);
+  loadPreview(`/api/preview/output/${currentJobId}`, { smooth: true });
 });
 
 function setActiveTab(tab) {
@@ -361,7 +369,7 @@ function handleJobPayload(jobId, payload) {
     if (payload.has_preview) {
       tabAfter.disabled = false;
       setActiveTab(tabAfter);
-      loadPreview(`/api/preview/output/${jobId}`);
+      loadPreview(`/api/preview/output/${jobId}`, { smooth: true });
     }
   } else if (payload.status === "error") {
     stopTracking();

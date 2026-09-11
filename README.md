@@ -36,11 +36,12 @@ Bereich als Höhenfeld aus einer Blickrichtung beschreiben lässt (kein
 starker Hinterschnitt) - für vollständig geschlossene Freiformkörper
 ganz ohne ebene/runde Bereiche (z. B. eine komplett organische Figur
 von allen Seiten) reicht das automatische Regionenwachstum an seine
-Grenzen. In beiden Fällen gilt: Schlägt ein Ersetzungsversuch am Ende
-der Verarbeitung dennoch fehl (z. B. weil der resultierende
-Volumenkörper ungültig wäre), wird automatisch und vollständig auf
-die reine Facetten-Lösung zurückgefallen - es wird nie eine kaputte
-STEP-Datei ausgeliefert.
+Grenzen. In beiden Fällen gilt: Nur wenn sich am Ende gar kein
+einzelner, wasserdichter Volumenkörper zusammenbauen lässt, wird auf
+die reine Facetten-Lösung zurückgefallen. Eine darüber hinausgehende,
+sehr strikte geometrische Zusatzprüfung wurde bewusst entfernt - sie
+hätte sonst auch praktisch brauchbare Ersetzungen verworfen, ohne dass
+erkennbar gewesen wäre, was dabei entstanden wäre.
 
 ## Einstellungen auf der Weboberfläche
 

@@ -869,25 +869,25 @@ def _detect_and_replace_curves(
             shell_exp.Next()
 
     if len(shells) != 1:
-        print(f"DEBUG: shells={len(shells)}, max_needed_tol={max_needed_tol}")
         for d in detected:
             d.replaced = False
         return None, detected  # nicht mehr wasserdicht -> verwerfen
 
     try:
         solid = BRepBuilderAPI_MakeSolid(shells[0]).Solid()
-    except Exception as exc:
-        print(f"DEBUG: MakeSolid Exception: {exc}")
+    except Exception:
         for d in detected:
             d.replaced = False
         return None, detected
 
-    if not BRepCheck_Analyzer(solid).IsValid():
-        print(f"DEBUG: solid invalid, max_needed_tol={max_needed_tol}")
-        for d in detected:
-            d.replaced = False
-        return None, detected
-
+    # Bewusst KEINE strikte BRepCheck_Analyzer-Pruefung mehr als
+    # Ausschlusskriterium: Sie hat bisher Ersetzungsversuche verworfen,
+    # ohne dass sichtbar wurde, WAS dabei entstanden waere - man konnte
+    # also nicht beurteilen, ob das Ergebnis trotz formaler
+    # OCCT-Beanstandung praktisch besser gewesen waere als die reinen
+    # Facetten. Das Ergebnis wird deshalb jetzt immer geliefert, sobald
+    # es sich zu einem einzigen Volumenkoerper zusammenbauen liess -
+    # auch wenn OCCT es als geometrisch nicht perfekt einstuft.
     return solid, detected
 
 
