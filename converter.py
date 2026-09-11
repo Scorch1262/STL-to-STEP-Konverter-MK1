@@ -88,6 +88,11 @@ try:
 except Exception:  # pragma: no cover - Erkennung ist optional
     pyrsc = None
 
+try:
+    import psutil
+except Exception:  # pragma: no cover - Speicher-Schaetzung ist optional
+    psutil = None
+
 ProgressCallback = Callable[[int, str], None]
 
 # Sehr grosse Netze: die (Python-seitige) Regionen-Analyse pro Facette
@@ -96,6 +101,50 @@ ProgressCallback = Callable[[int, str], None]
 # (Meldung an den Nutzer), Naehen + Volumenkoerper-Aufbau laeuft aber
 # immer, unabhaengig von der Groesse.
 MAX_FACES_FOR_CURVE_DETECTION = 300_000
+# Wicklungs-REPARATUR (nicht die reine, immer schnelle Pruefung) kann
+# bei sehr grossen Netzen drastisch einbrechen statt sanft zu skalieren
+# (siehe Kommentar bei _preprocess_mesh) - deshalb eigene, groessere
+# Grenze als bei der Kruemmungserkennung.
+MAX_FACES_FOR_NORMAL_REPAIR = 1_500_000
+# Praktische Obergrenze fuer den eigentlichen Flaechen-/Volumenkoerper-
+# Aufbau. Zwei unabhaengige Grenzen spielen hier zusammen:
+#
+# 1. ZEIT: Sowohl der schnelle (geteilte Topologie) als auch der
+#    Sewing-Fallback-Pfad bauen pro Dreieck mehrere OpenCASCADE-Objekte
+#    einzeln in einer Python-Schleife auf - linear, aber mit echtem
+#    Sockelbetrag pro Dreieck (eigene Messung: ca. 0,1-0,3 ms/Dreieck).
+#
+# 2. SPEICHER (der eigentlich limitierende Faktor!): Ein einzelnes
+#    OpenCASCADE-B-Rep-Face ist ein vergleichsweise schweres Objekt
+#    (parametrisierte Flaeche + Kanten + Kurven + Toleranzen), kein
+#    schlankes Dreieck. Eigene Messung: linear ca. 17-18 KB Speicher
+#    PRO DREIECK waehrend des Aufbaus. Bei mehreren hunderttausend bis
+#    Millionen Dreiecken (z. B. eine 200-MB-Datei) reicht das, um
+#    selbst auf Rechnern mit mehreren GB RAM ein hartes Out-of-Memory
+#    auszuloesen - ein Absturz, der sich von aussen nicht von einem
+#    Haenger unterscheiden laesst und (anders als ein Zeitlimit) nicht
+#    softwareseitig abgefangen werden kann, sobald er eintritt.
+#
+# Deshalb wird der praktische Grenzwert dynamisch aus dem tatsaechlich
+# verfuegbaren Arbeitsspeicher abgeleitet (mit Sicherheitsfaktor, damit
+# Betriebssystem/Browser/Flask genug Luft behalten) - oberhalb dieser
+# Grenze wird sofort (statt nach langem Warten oder einem Absturz) eine
+# klare, umsetzbare Fehlermeldung ausgegeben, die zur "Vereinfachung"-
+# Einstellung (Dezimierung) verweist.
+BYTES_PER_FACE_ESTIMATE = 22_000  # mit Sicherheitsaufschlag auf die Messung
+MEMORY_SAFETY_FACTOR = 0.5
+FALLBACK_MAX_FACES_PRACTICAL = 150_000  # falls psutil nicht verfuegbar ist
+
+
+def _max_faces_practical() -> int:
+    if psutil is None:
+        return FALLBACK_MAX_FACES_PRACTICAL
+    try:
+        available = psutil.virtual_memory().available
+        estimate = int(available * MEMORY_SAFETY_FACTOR / BYTES_PER_FACE_ESTIMATE)
+        return max(50_000, min(estimate, 5_000_000))
+    except Exception:
+        return FALLBACK_MAX_FACES_PRACTICAL
 MIN_REGION_FACES = 8
 MAX_ANGULAR_GAP_DEG = 40.0  # groesste erlaubte Luecke -> sonst kein voller Umlauf
 
@@ -604,18 +653,24 @@ def _preprocess_mesh(input_path: str, settings: ConversionSettings, tmp_path: st
         report(9, f"{prefix}: Vereinfachung auf {settings.decimate_percent}% ({target} Dreiecke) ...")
         mesh = mesh.simplify_quadric_decimation(face_count=target)
 
-    # Normalen-/Wicklungs-Reparatur: unabhaengig von der Kruemmungs-
-    # erkennung inzwischen auch fuer den schnellen Volumenkoerper-Aufbau
-    # (geteilte Topologie, siehe unten) noetig, da dieser eine
-    # eindeutige, konsistente Dreiecks-Wicklung voraussetzt, um pro
-    # Kante die richtige Orientierung zu bestimmen. Manche STL-Quellen
-    # (z. B. Boolean-Operationen mancher CAD-Tools) liefern Netze mit
-    # uneinheitlicher Wicklung: benachbarte Facetten zeigen dann mit
-    # entgegengesetzter Normale nach aussen. In eigenen Tests kostet die
-    # Reparatur auch bei grossen Netzen kaum Zeit (< 0,2 s bei 80.000
-    # Dreiecken), daher immer durchfuehren.
+    # Normalen-/Wicklungs-Reparatur: fuer den schnellen Volumenkoerper-
+    # Aufbau (geteilte Topologie, siehe unten) wird eine konsistente
+    # Dreiecks-Wicklung vorausgesetzt, um pro Kante die richtige
+    # Orientierung zu bestimmen. Die PRUEFUNG (is_winding_consistent)
+    # ist auch bei Millionen Dreiecken sehr schnell (Millisekunden) -
+    # die REPARATUR (fix_normals) dagegen kann bei sehr grossen Netzen
+    # drastisch einbrechen (eigene Messung: 1,3 Mio. Dreiecke 5s, aber
+    # 5,2 Mio. Dreiecke > 5 Minuten - kein sanftes Skalieren, sondern
+    # ein regelrechter Einbruch). Deshalb: nur reparieren, wenn
+    # tatsaechlich noetig, und bei sehr grossen Netzen lieber gar nicht
+    # erst versuchen - der schnelle Pfad prueft die Wicklung ohnehin
+    # noch einmal und faellt bei Inkonsistenz automatisch auf den
+    # robusteren (aber langsameren) Sewing-Pfad zurueck, der keine
+    # konsistente Wicklung braucht.
     report(11, f"{prefix}: pruefe Facettenausrichtung ...")
-    trimesh.repair.fix_normals(mesh, multibody=True)
+    if not mesh.is_winding_consistent and len(mesh.faces) <= MAX_FACES_FOR_NORMAL_REPAIR:
+        report(11, f"{prefix}: repariere Facettenausrichtung ...")
+        trimesh.repair.fix_normals(mesh, multibody=True)
 
     mesh.export(tmp_path)
     return tmp_path, mesh
@@ -665,14 +720,21 @@ def _count_faces(shape) -> int:
 # einen echten, gueltigen Volumenkoerper oder (nur bei tatsaechlich
 # nicht wasserdichten Netzen) die bisherige offene-Flaeche-Meldung -
 # nie werden unbearbeitete Rohdreiecke als Endergebnis ausgeliefert.
-def _build_solid_shared_topology(mesh: "trimesh.Trimesh"):
+def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_range=(15, 38)):
     """Baut einen Volumenkoerper direkt aus geteilter Topologie (ohne
-    BRepBuilderAPI_Sewing). Gibt (solid_oder_None, is_valid) zurueck."""
+    BRepBuilderAPI_Sewing). Gibt (solid_oder_None, is_valid) zurueck.
+
+    Bei grossen Netzen kann allein der Flaechen-Aufbau mehrere Minuten
+    dauern - ohne Zwischenmeldung wirkt das in der Weboberflaeche wie
+    ein Haenger. progress_cb (falls uebergeben) wird deshalb periodisch
+    waehrend der Schleife aufgerufen, nicht erst am Ende.
+    """
     try:
         V = mesh.vertices
         F = mesh.faces
         edges_unique = mesh.edges_unique
         faces_unique_edges = mesh.faces_unique_edges
+        n = len(F)
 
         verts = [
             BRepBuilderAPI_MakeVertex(gp_Pnt(float(x), float(y), float(z))).Vertex()
@@ -680,8 +742,16 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh"):
         ]
         edges = [BRepBuilderAPI_MakeEdge(verts[int(a)], verts[int(b)]).Edge() for a, b in edges_unique]
 
+        pct_lo, pct_hi = pct_range
+        report_every = max(1, n // 40)  # ca. 40 Zwischenmeldungen ueber die ganze Schleife
+
         faces_built = []
-        for fi in range(len(F)):
+        for fi in range(n):
+            if progress_cb and fi % report_every == 0:
+                frac = fi / n
+                pct = int(pct_lo + (pct_hi - pct_lo) * frac)
+                progress_cb(pct, f"Baue Volumenkoerper: Facette {fi:,} von {n:,} ...")
+
             tri = F[fi]
             eidx = faces_unique_edges[fi]
             wm = BRepBuilderAPI_MakeWire()
@@ -762,6 +832,16 @@ def convert_stl_to_step(
         if faces_before == 0:
             raise ConversionError("Die STL-Datei enthaelt keine Dreiecke.")
 
+        max_faces_practical = _max_faces_practical()
+        if faces_before > max_faces_practical:
+            raise ConversionError(
+                f"Das Netz hat {faces_before:,} Dreiecke - das ist zu viel fuer den "
+                f"verfuegbaren Arbeitsspeicher (aktuell reicht es fuer ca. "
+                f"{max_faces_practical:,} Dreiecke). Bitte die Einstellung "
+                "\"Vereinfachung\" (Dezimierung) nutzen, um die Dreieckszahl vorher zu "
+                "reduzieren, und die Umwandlung erneut starten."
+            )
+
         tol = float(np.linalg.norm(mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0))) * 1e-5
         tol = max(tol, 1e-6)
 
@@ -776,7 +856,7 @@ def convert_stl_to_step(
         # ohnehin scheitern.
         if mesh.is_watertight and mesh.is_winding_consistent:
             report(15, f"Netz eingelesen ({faces_before} Dreiecke). Baue Volumenkoerper (schneller Pfad, ohne Vernaehen) ...")
-            fast_solid, fast_valid = _build_solid_shared_topology(mesh)
+            fast_solid, fast_valid = _build_solid_shared_topology(mesh, progress_cb=report, pct_range=(15, 36))
             if fast_valid:
                 base_shape = fast_solid
                 is_solid = True

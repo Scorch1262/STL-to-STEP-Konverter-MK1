@@ -79,20 +79,36 @@ steht dadurch **immer** entweder ein echter, geprüft gültiger
 Volumenkörper oder eine ehrliche „Netz nicht wasserdicht"-Meldung -
 nie werden unbearbeitete Rohdreiecke als Ergebnis ausgeliefert.
 
-**Verbleibende, ehrliche Grenze:** Der Flächen-Aufbau selbst läuft noch
-als Python-Schleife über jede Facette (mehrere OpenCASCADE-Aufrufe pro
-Dreieck) - das ist inzwischen linear statt überlinear, hat aber
-weiterhin einen Sockelbetrag an Aufwand pro Dreieck. Bei einem Netz mit
-z. B. 100 Millionen Dreiecken (mehrere GB allein als Datei) wäre auch
-mit dieser deutlich saubereren Architektur noch mit mehreren Stunden zu
-rechnen. **Praktische Empfehlung für sehr große Dateien:** die
+**Verbleibende, ehrliche Grenze - Arbeitsspeicher, nicht nur Zeit:**
+Der Flächen-Aufbau läuft als Python-Schleife über jede Facette (mehrere
+OpenCASCADE-Aufrufe pro Dreieck) - das ist inzwischen linear statt
+überlinear in der Zeit, aber der eigentlich limitierende Faktor ist
+Speicher: Ein einzelnes OpenCASCADE-B-Rep-Face ist ein vergleichsweise
+schweres Objekt (parametrisierte Fläche + Kanten + Kurven + Toleranzen),
+kein schlankes Dreieck. Eigene Messung: linear ca. 17-18 KB Speicher
+**pro Dreieck** während des Aufbaus. Bei einem Netz mit mehreren
+hunderttausend bis Millionen Dreiecken reicht das, um selbst auf
+Rechnern mit mehreren GB RAM ein hartes Out-of-Memory auszulösen - ein
+Absturz, der sich von aussen nicht von einem Hänger unterscheiden lässt
+und (anders als ein Zeitlimit) nicht softwareseitig abgefangen werden
+kann, sobald er eintritt.
+
+**Deshalb schätzt das Programm beim Start automatisch**, wie viele
+Dreiecke der tatsächlich verfügbare Arbeitsspeicher sicher zulässt
+(über `psutil`, mit Sicherheitsabstand), und bricht bei zu großen
+Dateien sofort mit einer klaren Fehlermeldung ab, statt zu hängen oder
+abzustürzen. **Praktische Empfehlung für sehr große Dateien:** die
 Einstellung „Vereinfachung" (Dezimierung) *zuerst* nutzen, um die
 Dreieckszahl auf ein handhabbares Maß zu reduzieren - dieser Schritt
 läuft in einer schnellen, für große Netze ausgelegten Bibliothek
-(`fast-simplification`) und passiert *vor* dem OpenCASCADE-Aufbau. Ab
-automatisch 300.000 Dreiecken wird zusätzlich die Zylinder-/Kugel-
-Erkennung übersprungen (reine Flächenrückführung läuft trotzdem
-weiter), um die Verarbeitung nicht unnötig auszubremsen.
+(`fast-simplification`) und passiert *vor* dem OpenCASCADE-Aufbau, ist
+also von dieser Speichergrenze nicht betroffen. Ab automatisch 300.000
+Dreiecken wird zusätzlich die Zylinder-/Kugel-Erkennung übersprungen
+(reine Flächenrückführung läuft trotzdem weiter).
+
+Während des Aufbaus selbst wird jetzt außerdem laufend der Fortschritt
+gemeldet ("Facette X von Y"), damit auch eine mehrminütige Umwandlung
+sichtbar voranschreitet statt wie eingefroren zu wirken.
 
 ## Robustheit bei Hintergrund-Tabs / Verbindungsaussetzern
 

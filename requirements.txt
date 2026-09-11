@@ -4,4 +4,5 @@ trimesh>=4.0
 scipy>=1.10
 pyransac3d>=0.6
 fast-simplification>=0.1
+psutil>=5.9
 pyinstaller>=6.10

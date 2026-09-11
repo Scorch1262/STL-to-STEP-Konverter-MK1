@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.1 - Fix: Programm haengt bei sehr grossen Dateien
+- **Ursache 1 (der eigentliche Haenger) behoben:** Die Facetten-
+  Normalen-Reparatur wurde bisher IMMER ausgefuehrt, auch wenn die
+  Wicklung des Netzes schon konsistent war. Bei sehr grossen Netzen
+  (getestet: 5,2 Mio. Dreiecke / 250 MB) konnte allein das ueber 5
+  Minuten dauern, obwohl die reine PRUEFUNG (ob eine Reparatur ueber-
+  haupt noetig ist) nur Millisekunden braucht. Jetzt: erst pruefen,
+  nur bei tatsaechlichem Bedarf reparieren.
+- **Ursache 2 (wichtiger, unabhaengiger Fund): Speicher statt Zeit.**
+  Eigene Messung ergab einen linearen Speicherbedarf von ca. 17-18 KB
+  PRO DREIECK beim Volumenkoerper-Aufbau (ein OpenCASCADE-B-Rep-Face
+  ist ein vergleichsweise schweres Objekt). Bei grossen Dateien fuehrte
+  das zu einem harten Out-of-Memory-Absturz, der sich von aussen nicht
+  von einem Haenger unterscheiden liess.
+- **Neu: speicheradaptive Obergrenze.** Das Programm schaetzt beim
+  Start ueber den tatsaechlich verfuegbaren Arbeitsspeicher (`psutil`),
+  wie viele Dreiecke sicher verarbeitbar sind, und bricht bei zu
+  grossen Dateien SOFORT (statt nach langem Warten oder einem Absturz)
+  mit einer klaren, umsetzbaren Fehlermeldung ab, die auf die
+  "Vereinfachung"-Einstellung verweist.
+- **Neu: Live-Fortschritt waehrend des Volumenkoerper-Aufbaus.** Vorher
+  gab es zwischen 15% und 38% keine einzige Zwischenmeldung - bei
+  mehreren Minuten Laufzeit wirkte das wie ein Haenger, obwohl im
+  Hintergrund gearbeitet wurde. Jetzt werden regelmaessig ("Facette X
+  von Y") Zwischenstaende gemeldet.
+
 ## 1.3.0 - Grosse Performance-Ueberarbeitung
 - **Sewing eliminiert:** Der bisher groesste Engpass (BRepBuilderAPI_Sewing)
   entfaellt fuer die meisten Netze komplett. Ein neuer schneller Pfad baut
