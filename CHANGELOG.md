@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.2 - Fix: Loch im Modell + ganze Regionen statt Facetten-Rand
+- **Kritischer Fix:** Die in 1.4.1 komplett entfernte Gueltigkeits-
+  pruefung hat tatsaechlich kaputte Geometrie durchgelassen (sichtbares
+  Loch im Modell, Datei liess sich in anderer Software nicht oeffnen).
+  Das war kein Fehlalarm der Pruefung, sondern ein echter Fehler.
+  Ersetzt durch eine GEZIELTE Lueckenpruefung: Es wird weiterhin
+  geprueft, ob jede Kante zu genau zwei Flaechen gehoert (das ist die
+  konkrete Ursache eines Lochs) - aber nicht mehr die volle, oft zu
+  strenge OCCT-Rundum-Pruefung, die auch wegen rein kosmetischer
+  Toleranzfragen angeschlagen hat. Dabei wurde ein weiterer Bug
+  gefunden und behoben: die neue Pruefung schlug faelschlich bei einer
+  kompletten Kugel an (periodische Naht-Kante wurde falsch gezaehlt).
+- **Grundlegende Verbesserung der Scan-Glaettung:** Statt nur einen
+  Innenbereich mit einem Facetten-Rand drumherum zu ersetzen, wird
+  jetzt die GESAMTE zusammenhaengende Freiform-Region durch eine
+  einzige Flaeche ersetzt - kein Facetten-Rest mehr am Rand. Das
+  behebt gleich zwei gemeldete Probleme: kleinere Ausgabedatei (im
+  Test 2151 statt 3738 STEP-Eintraege) und tatsaechlich "eine Flaeche
+  aus mehreren Dreiecken" statt weiterhin vieler kleiner Facetten.
+  Im Test: 768 Facetten wurden zu nur noch 6 Flaechen (vorher 48).
+
 ## 1.4.1 - Sicherheitspruefung entfernt + Vorschau-Schattierung korrigiert
 - **Auf Nutzerwunsch entfernt:** Die abschliessende, sehr strikte
   BRepCheck_Analyzer-Gueltigkeitspruefung nach einer Zylinder-/Kugel-

@@ -70,7 +70,7 @@ from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.TopExp import TopExp_Explorer, TopExp
-from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE, TopAbs_VERTEX
+from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE, TopAbs_VERTEX, TopAbs_EDGE
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
@@ -86,6 +86,7 @@ from OCP.BRep import BRep_Tool
 from OCP.collections import (
     IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap,
     Array2_gp_Pnt,
+    IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher as EdgeFaceMap,
 )
 
 try:
@@ -484,6 +485,48 @@ def _order_edge_chain(edges: list) -> list:
     return [edges[i] for i in ordered]
 
 
+def _shell_has_open_edges(shell) -> bool:
+    """Prueft gezielt auf echte Luecken (Kanten, die nicht zu genau
+    zwei Flaechen gehoeren) - das ist die konkrete Ursache eines
+    sichtbaren "Lochs" im Ergebnis. Bewusst KEINE volle
+    BRepCheck_Analyzer-Pruefung (die auch wegen kosmetischer
+    Toleranzfragen anschlaegt, ohne dass ein sichtbarer Fehler
+    entsteht) - nur dieser eine, eindeutig sichtbare Fehlerfall wird
+    abgefangen.
+
+    Entartete Kanten (Pole einer Kugel-/Zylinderflaeche) und
+    Naht-Kanten periodischer Flaechen (z. B. der Laengsgrad-Uebergang
+    einer vollen Kugel, von derselben Flaeche zweimal referenziert)
+    sind KEINE Luecken, obwohl sie in der einfachen Referenzzaehlung
+    ungewoehnlich aussehen koennen - sie werden deshalb ausgenommen.
+    """
+    edge_face_map = EdgeFaceMap()
+    TopExp.MapShapesAndAncestors_s(shell, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
+    for i in range(1, edge_face_map.Extent() + 1):
+        edge = edge_face_map.FindKey(i)
+        if BRep_Tool.Degenerated_s(TopoDS.Edge(edge)):
+            continue  # Pol einer Kugel/eines Kegels - kein Fehler
+        faces_here = list(edge_face_map.FindFromIndex(i))
+        if len(faces_here) == 2:
+            continue
+        if len(faces_here) == 1:
+            # Kommt diese Kante als Naht (zweimal) auf DERSELBEN Flaeche
+            # vor (z. B. der 0/360-Grad-Uebergang einer vollen Kugel-
+            # oder Zylinderflaeche)? Dann ist sie topologisch bereits
+            # korrekt geschlossen, auch wenn die einfache Ancestor-Map
+            # sie nur einmal auflistet.
+            fexp = TopExp_Explorer(faces_here[0], TopAbs_EDGE)
+            count_on_face = 0
+            while fexp.More():
+                if TopoDS.Edge(fexp.Current()).IsSame(TopoDS.Edge(edge)):
+                    count_on_face += 1
+                fexp.Next()
+            if count_on_face >= 2:
+                continue  # Naht-Kante, kein Loch
+        return True
+    return False
+
+
 def _build_freeform_filling_patch(boundary_edges: list, interior_points: np.ndarray):
     """Baut eine glatte Flaeche direkt aus den vorhandenen (geteilten)
     Randkanten mittels BRepOffsetAPI_MakeFilling - das umgeht das
@@ -728,24 +771,22 @@ def _detect_and_replace_curves(
             max_needed_tol = max(max_needed_tol, extent * 1e-2)
 
     if smooth_freeform and shared_edges is not None:
-        # Uebrig gebliebene GROSSE Freiform-Regionen (kein Zylinder,
-        # keine Kugel, nicht eben) per BRepOffsetAPI_MakeFilling glaetten -
-        # typisch fuer 3D-Scan-Oberflaechen. Die Randkanten der ersetzten
-        # Flaeche sind exakt dieselben (geteilten) Kanten, die die
-        # umgebenden Original-Facetten ohnehin schon verwenden - dadurch
-        # ist KEINE grosse Naht-Toleranz noetig (mehrere eigene Versuche
-        # mit gefitteten B-Spline-Flaechen + Wire-Trimmung scheiterten
-        # zuverlaessig an OpenCASCADE-Topologiefeinheiten; MakeFilling
-        # umgeht das, indem es die Flaeche direkt aus den Randkanten
-        # aufbaut).
+        # GANZE Freiform-Regionen (kein Zylinder, keine Kugel, nicht
+        # eben) per BRepOffsetAPI_MakeFilling durch je EINE einzige
+        # Flaeche ersetzen - nicht nur einen Innenbereich mit einem
+        # Facetten-Rand drumherum. Die Randkanten der neuen Flaeche
+        # sind exakt dieselben (geteilten) Kanten, die die benachbarten
+        # (anderen) Regionen ohnehin schon verwenden - dadurch ist
+        # keine grosse Naht-Toleranz noetig und es entsteht keine
+        # unnoetige Facetten-Restmenge rund um jede geglaettete Stelle.
         edge_to_faces_all: dict = {}
         for fi in range(n_faces):
             for k in range(3):
                 edge_to_faces_all.setdefault(faces_unique_edges[fi][k], []).append(fi)
 
         for region in regions:
-            region_set_check = set(region)
-            if region_set_check & replaced_region_indices:
+            region_set = set(region)
+            if region_set & replaced_region_indices:
                 continue  # ueberschneidet sich mit einer bereits ersetzten Region
             if len(region) < MIN_FREEFORM_REGION_FACES:
                 continue
@@ -769,50 +810,25 @@ def _detect_and_replace_curves(
             if sagitta < max(2e-3, extent * 0.003):
                 continue  # tatsaechlich eben -> das erledigt UnifySameDomain
 
-            # Hoehenfeld-PCA nur zur ENTSCHEIDUNG, welche Dreiecke ersetzt
-            # werden (Innenbereich mit Sicherheitsabstand zum Rand) - die
-            # eigentliche Flaeche entsteht danach direkt aus den echten
-            # Randkanten, nicht aus dieser Projektion.
-            _, s_vals, vt2 = np.linalg.svd(pts - centroid, full_matrices=False)
-            if s_vals[1] < 1e-9 or s_vals[2] > 0.6 * s_vals[1]:
-                continue  # kein Hoehenfeld (zu starker Hinterschnitt)
-            u_axis, v_axis = vt2[0], vt2[1]
-            tri_verts = triangles[region]
-            rel = tri_verts - centroid
-            tu = rel @ u_axis
-            tv = rel @ v_axis
-            u_lo, u_hi = tu.min(), tu.max()
-            v_lo, v_hi = tv.min(), tv.max()
-            margin_u = (u_hi - u_lo) * FREEFORM_INTERIOR_MARGIN
-            margin_v = (v_hi - v_lo) * FREEFORM_INTERIOR_MARGIN
-            safe_u = (u_lo + margin_u, u_hi - margin_u)
-            safe_v = (v_lo + margin_v, v_hi - margin_v)
-            covered_mask = (
-                (tu.min(axis=1) >= safe_u[0]) & (tu.max(axis=1) <= safe_u[1])
-                & (tv.min(axis=1) >= safe_v[0]) & (tv.max(axis=1) <= safe_v[1])
-            )
-            covered_indices = [region[i] for i in range(len(region)) if covered_mask[i]]
-            if len(covered_indices) < MIN_FREEFORM_REGION_FACES // 2:
-                continue  # zu wenig tatsaechlich abgedeckt, lohnt sich nicht
-            covered_set = set(covered_indices)
-
-            # Echte Randkanten des abgedeckten Bereichs finden (Kanten,
-            # die zu mindestens einer NICHT abgedeckten Nachbar-Facette
+            # Echte Randkanten der GESAMTEN Region finden (Kanten, die
+            # zu mindestens einer Facette AUSSERHALB dieser Region
             # gehoeren) und die dazugehoerigen, bereits geteilten
-            # OCCT-Kantenobjekte holen.
+            # OCCT-Kantenobjekte holen. Diese Randkanten sind die
+            # tatsaechliche Grenze zur Nachbarregion, nicht eine
+            # kuenstlich nach innen gezogene Linie.
             region_edge_idx = set()
-            for fi in covered_set:
+            for fi in region:
                 for k in range(3):
                     region_edge_idx.add(faces_unique_edges[fi][k])
             boundary_edge_idx = [
                 eidx for eidx in region_edge_idx
-                if len([f for f in edge_to_faces_all.get(eidx, []) if f in covered_set])
+                if len([f for f in edge_to_faces_all.get(eidx, []) if f in region_set])
                 < len(edge_to_faces_all.get(eidx, []))
             ]
             boundary_occ_edges = [shared_edges[eidx] for eidx in boundary_edge_idx]
 
-            covered_pts = triangles[list(covered_set)].reshape(-1, 3)
-            new_face = _build_freeform_filling_patch(boundary_occ_edges, covered_pts)
+            new_face = _build_freeform_filling_patch(boundary_occ_edges, pts)
+            covered_indices = list(region)
 
             detected.append(
                 DetectedShape(
@@ -873,6 +889,18 @@ def _detect_and_replace_curves(
             d.replaced = False
         return None, detected  # nicht mehr wasserdicht -> verwerfen
 
+    # Gezielte Lueckenpruefung VOR dem Volumenkoerper-Aufbau: eine
+    # Kante, die nicht zu genau zwei Flaechen gehoert, bedeutet ein
+    # sichtbares Loch im Ergebnis. Das wird immer verworfen (zurueck zu
+    # den Original-Facetten fuer diese Regionen) - anders als die
+    # vorherige volle BRepCheck_Analyzer-Pruefung, die auch wegen rein
+    # kosmetischer Toleranzfragen anschlug, faengt das nur den
+    # tatsaechlich sichtbaren, harten Fehler ab.
+    if _shell_has_open_edges(shells[0]):
+        for d in detected:
+            d.replaced = False
+        return None, detected
+
     try:
         solid = BRepBuilderAPI_MakeSolid(shells[0]).Solid()
     except Exception:
@@ -880,14 +908,6 @@ def _detect_and_replace_curves(
             d.replaced = False
         return None, detected
 
-    # Bewusst KEINE strikte BRepCheck_Analyzer-Pruefung mehr als
-    # Ausschlusskriterium: Sie hat bisher Ersetzungsversuche verworfen,
-    # ohne dass sichtbar wurde, WAS dabei entstanden waere - man konnte
-    # also nicht beurteilen, ob das Ergebnis trotz formaler
-    # OCCT-Beanstandung praktisch besser gewesen waere als die reinen
-    # Facetten. Das Ergebnis wird deshalb jetzt immer geliefert, sobald
-    # es sich zu einem einzigen Volumenkoerper zusammenbauen liess -
-    # auch wenn OCCT es als geometrisch nicht perfekt einstuft.
     return solid, detected
 
 

@@ -16,10 +16,11 @@ dabei zu einem einzigen Volumenkörper zusammengefasst.
    3 Bohrungen wird so z. B. von 600 Facetten auf 9 echte Flächen
    reduziert, bei exakt erhaltenem Volumen.
 5. **Unebene, verrauschte Freiformbereiche (z. B. 3D-Scan-Oberflächen)
-   werden - falls in den Einstellungen aktiviert - im Inneren durch
-   eine echte glatte Fläche ohne Facetten ersetzt** (siehe
-   "Scan-Oberfläche glätten" unten). Am Rand bleibt ein schmaler
-   Streifen Facetten für einen sicheren Übergang stehen.
+   werden - falls in den Einstellungen aktiviert - VOLLSTÄNDIG durch
+   eine einzige echte glatte Fläche ohne Facetten ersetzt** (siehe
+   "Scan-Oberfläche glätten" unten) - nicht nur ein Innenbereich mit
+   Facetten-Rand drumherum, sondern die ganze zusammenhängende Region
+   auf einmal.
 6. Verbleibende benachbarte, in derselben Ebene liegende Dreiecke
    werden zu jeweils einer großen, echten Fläche zusammengefasst.
 7. Ergebnis als STEP (AP214) schreiben, zusätzlich eine 3D-Vorschau
@@ -36,12 +37,15 @@ Bereich als Höhenfeld aus einer Blickrichtung beschreiben lässt (kein
 starker Hinterschnitt) - für vollständig geschlossene Freiformkörper
 ganz ohne ebene/runde Bereiche (z. B. eine komplett organische Figur
 von allen Seiten) reicht das automatische Regionenwachstum an seine
-Grenzen. In beiden Fällen gilt: Nur wenn sich am Ende gar kein
-einzelner, wasserdichter Volumenkörper zusammenbauen lässt, wird auf
-die reine Facetten-Lösung zurückgefallen. Eine darüber hinausgehende,
-sehr strikte geometrische Zusatzprüfung wurde bewusst entfernt - sie
-hätte sonst auch praktisch brauchbare Ersetzungen verworfen, ohne dass
-erkennbar gewesen wäre, was dabei entstanden wäre.
+Grenzen.
+
+**Zur Absicherung:** Nur wenn sich am Ende gar kein einzelner,
+wasserdichter Volumenkörper zusammenbauen lässt, wird auf die reine
+Facetten-Lösung zurückgefallen. Geprüft wird dabei gezielt auf echte
+Löcher (eine Kante, die nicht zu genau zwei Flächen gehört) - nicht
+mehr per voller, oft zu strenger OCCT-Rundumprüfung, die auch wegen
+rein kosmetischer Toleranzfragen angeschlagen hätte, ohne dass ein
+tatsächlicher Fehler im Ergebnis vorlag.
 
 ## Einstellungen auf der Weboberfläche
 
