@@ -15,22 +15,31 @@ dabei zu einem einzigen Volumenkörper zusammengefasst.
    ersetzt** - nicht mehr nur triangulierte Facetten. Eine Platte mit
    3 Bohrungen wird so z. B. von 600 Facetten auf 9 echte Flächen
    reduziert, bei exakt erhaltenem Volumen.
-5. Verbleibende benachbarte, in derselben Ebene liegende Dreiecke
+5. **Unebene, verrauschte Freiformbereiche (z. B. 3D-Scan-Oberflächen)
+   werden - falls in den Einstellungen aktiviert - im Inneren durch
+   eine echte glatte Fläche ohne Facetten ersetzt** (siehe
+   "Scan-Oberfläche glätten" unten). Am Rand bleibt ein schmaler
+   Streifen Facetten für einen sicheren Übergang stehen.
+6. Verbleibende benachbarte, in derselben Ebene liegende Dreiecke
    werden zu jeweils einer großen, echten Fläche zusammengefasst.
-6. Ergebnis als STEP (AP214) schreiben, zusätzlich eine 3D-Vorschau
+7. Ergebnis als STEP (AP214) schreiben, zusätzlich eine 3D-Vorschau
    (Vorher/Nachher inkl. Kanten-Overlay) direkt auf der Weboberfläche.
 
-**Wichtige Einschränkung:** Ersetzt werden nur **vollständige**
-Zylinder-/Kugelflächen (volle 360° um Achse bzw. Pol) - das deckt die
-häufigsten Fälle ab (Bohrungen, Wellen/Bolzen, Kuppeln, volle Kugeln).
-Teilausschnitte, Verrundungen mit wechselndem Radius (variable
-Fillets) und echte Freiformflächen bleiben als Facetten erhalten -
-eine vollständige automatische Flächenrückführung wie in Geomagic
-Wrap/Design X (inkl. Segmentierung beliebiger Freiformflächen in
-NURBS-Patches) ist damit nicht erreicht. Schlägt der Ersetzungsversuch
-am Ende der Verarbeitung dennoch fehl (z. B. weil der resultierende
-Volumenkörper ungültig wäre), wird automatisch und vollständig auf die
-reine Facetten-Lösung zurückgefallen - es wird nie eine kaputte
+**Wichtige Einschränkung bei Zylindern/Kugeln:** Ersetzt werden nur
+**vollständige** Zylinder-/Kugelflächen (volle 360° um Achse bzw.
+Pol) - das deckt die häufigsten Fälle ab (Bohrungen, Wellen/Bolzen,
+Kuppeln, volle Kugeln). Teilausschnitte und Verrundungen mit
+wechselndem Radius (variable Fillets) bleiben als Facetten erhalten.
+
+**Zur Scan-Glättung:** Sie setzt voraus, dass sich der jeweilige
+Bereich als Höhenfeld aus einer Blickrichtung beschreiben lässt (kein
+starker Hinterschnitt) - für vollständig geschlossene Freiformkörper
+ganz ohne ebene/runde Bereiche (z. B. eine komplett organische Figur
+von allen Seiten) reicht das automatische Regionenwachstum an seine
+Grenzen. In beiden Fällen gilt: Schlägt ein Ersetzungsversuch am Ende
+der Verarbeitung dennoch fehl (z. B. weil der resultierende
+Volumenkörper ungültig wäre), wird automatisch und vollständig auf
+die reine Facetten-Lösung zurückgefallen - es wird nie eine kaputte
 STEP-Datei ausgeliefert.
 
 ## Einstellungen auf der Weboberfläche
@@ -40,6 +49,11 @@ STEP-Datei ausgeliefert.
 - **Vereinfachung**: Ziel-Dreieckszahl in % der ursprünglichen Anzahl.
 - **Ebene Flächen zusammenführen**: an/aus.
 - **Zylinder/Kugeln automatisch ersetzen**: an/aus.
+- **Scan-Oberfläche glätten**: an/aus. Wandelt unebene, verrauschte
+  Freiformbereiche im Inneren in eine echte glatte Fläche ohne
+  Facetten um (technischer Hintergrund: `BRepOffsetAPI_MakeFilling`
+  baut die Fläche direkt aus den vorhandenen, geteilten Randkanten
+  auf - dadurch ist keine riskante grosse Naht-Toleranz nötig).
 
 ## Performance bei großen Netzen
 

@@ -70,7 +70,7 @@ from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_Writer, STEPControl_AsIs
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.TopExp import TopExp_Explorer, TopExp
-from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE
+from OCP.TopAbs import TopAbs_SHELL, TopAbs_FACE, TopAbs_VERTEX
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
@@ -79,14 +79,26 @@ from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.gp import gp_Pnt, gp_Dir, gp_Ax3, gp_Cylinder, gp_Sphere
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
+from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+from OCP.GeomAbs import GeomAbs_C2, GeomAbs_C0
+from OCP.BRep import BRep_Tool
 from OCP.collections import (
     IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap,
+    Array2_gp_Pnt,
 )
 
 try:
     import pyransac3d as pyrsc
 except Exception:  # pragma: no cover - Erkennung ist optional
     pyrsc = None
+
+try:
+    from scipy.interpolate import griddata
+    from scipy.spatial import cKDTree
+except Exception:  # pragma: no cover - Glaettung ist optional
+    griddata = None
+    cKDTree = None
 
 try:
     import psutil
@@ -160,6 +172,8 @@ def _max_faces_practical() -> int:
         return FALLBACK_MAX_FACES_PRACTICAL
 MIN_REGION_FACES = 8
 MAX_ANGULAR_GAP_DEG = 40.0  # groesste erlaubte Luecke -> sonst kein voller Umlauf
+MIN_FREEFORM_REGION_FACES = 60  # unterhalb lohnt sich eine B-Spline-Glaettung nicht
+FREEFORM_INTERIOR_MARGIN = 0.15  # 15% Sicherheitsabstand nach innen zum echten Rand
 
 
 @dataclass
@@ -168,6 +182,7 @@ class ConversionSettings:
     decimate_percent: int = 100
     merge_planar: bool = True
     detect_curved_shapes: bool = True  # Zylinder/Kugeln erkennen UND ersetzen
+    smooth_scan_surfaces: bool = False  # unebene Scan-Flaechen in glatte NURBS umwandeln
     worker_count: int = 0               # 0 = automatisch (alle Kerne)
 
     @classmethod
@@ -184,6 +199,7 @@ class ConversionSettings:
             decimate_percent=_int("decimate_percent", 100, 1, 100),
             merge_planar=str(form.get("merge_planar", "1")) not in ("0", "false", "False"),
             detect_curved_shapes=str(form.get("detect_curved_shapes", "1")) not in ("0", "false", "False"),
+            smooth_scan_surfaces=str(form.get("smooth_scan_surfaces", "0")) not in ("0", "false", "False"),
             worker_count=_int("worker_count", 0, 0, 64),
         )
 
@@ -421,7 +437,113 @@ def _build_analytic_face(fit: dict):
         return None
 
 
-def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float, worker_count: int):
+def _edge_endpoints_rounded(edge, digits: int = 6) -> list:
+    """Eckpunkte einer Kante als gerundete (x,y,z)-Tupel - fuer den
+    Randketten-Aufbau (Punktvergleich statt teurer Geometrie-Objekte)."""
+    pts = []
+    vexp = TopExp_Explorer(edge, TopAbs_VERTEX)
+    while vexp.More():
+        v = TopoDS.Vertex(vexp.Current())
+        p = BRep_Tool.Pnt_s(v)
+        pts.append((round(p.X(), digits), round(p.Y(), digits), round(p.Z(), digits)))
+        vexp.Next()
+    return pts
+
+
+def _order_edge_chain(edges: list) -> list:
+    """Bringt eine Menge zusammenhaengender Randkanten in eine
+    verbundene Reihenfolge (Ende an Anfang), wie sie
+    BRepBuilderAPI_MakeWire.Add() zuverlaessig braucht - eine
+    Kanten-MENGE in beliebiger Reihenfolge fuehrt sonst haeufig zu
+    "DisconnectedWire", obwohl die Kanten insgesamt einen einzigen
+    geschlossenen Ring bilden."""
+    if not edges:
+        return []
+    endpoints = [_edge_endpoints_rounded(e) for e in edges]
+    vert_to_edges = {}
+    for i, pts in enumerate(endpoints):
+        for p in pts:
+            vert_to_edges.setdefault(p, []).append(i)
+
+    ordered = [0]
+    used = {0}
+    if len(endpoints[0]) < 2:
+        return edges
+    current_end = endpoints[0][1]
+    while len(ordered) < len(edges):
+        candidates = [i for i in vert_to_edges.get(current_end, []) if i not in used]
+        if not candidates:
+            break
+        nxt = candidates[0]
+        used.add(nxt)
+        ordered.append(nxt)
+        pe = endpoints[nxt]
+        current_end = pe[1] if pe[0] == current_end else pe[0]
+    if len(ordered) != len(edges):
+        return edges  # nicht vollstaendig verbunden -> unveraendert zurueckgeben, Aufrufer prueft die Wire
+    return [edges[i] for i in ordered]
+
+
+def _build_freeform_filling_patch(boundary_edges: list, interior_points: np.ndarray):
+    """Baut eine glatte Flaeche direkt aus den vorhandenen (geteilten)
+    Randkanten mittels BRepOffsetAPI_MakeFilling - das umgeht das
+    manuelle Parametrisieren/Trimmen einer B-Spline-Flaeche komplett
+    (mehrere eigene Versuche, eine gefittete B-Spline-Flaeche per Wire
+    zu beschneiden, scheiterten zuverlässig an OpenCASCADE-
+    Topologiefeinheiten - siehe Recherche). MakeFilling erzeugt die
+    Flaeche direkt aus den Randkanten (C0-Bedingung: muss durch die
+    3D-Kurve der Kante verlaufen) plus einigen inneren Stuetzpunkten,
+    die die Flaeche zu den (entrauschten) Hoehenwerten der Originaldaten
+    ziehen.
+
+    Eigene Tests zeigten: die Anzahl der inneren Stuetzpunkte ist
+    numerisch empfindlich (manche Anzahlen lassen den Aufbau
+    fehlschlagen, benachbarte Anzahlen funktionieren einwandfrei) -
+    deshalb werden mehrere Kandidatenwerte ausprobiert.
+    """
+    if len(boundary_edges) < 3:
+        return None
+
+    ordered = _order_edge_chain(boundary_edges)
+    wire_check = BRepBuilderAPI_MakeWire()
+    for e in ordered:
+        wire_check.Add(e)
+    if not wire_check.IsDone() or not wire_check.Wire().Closed():
+        return None
+
+    n_interior = len(interior_points)
+    for n_pts in (12, 10, 8, 6, 4, 0):
+        if n_pts > n_interior:
+            continue
+        try:
+            filler = BRepOffsetAPI_MakeFilling()
+            for e in ordered:
+                filler.Add(e, GeomAbs_C0, True)
+            if n_pts > 0:
+                idxs = np.linspace(0, n_interior - 1, n_pts).astype(int)
+                for idx in idxs:
+                    x, y, z = interior_points[idx]
+                    filler.Add(gp_Pnt(float(x), float(y), float(z)))
+            filler.Build()
+            if not filler.IsDone():
+                continue
+            face = filler.Shape()
+            if not BRepCheck_Analyzer(face).IsValid():
+                continue
+            return face
+        except Exception:
+            continue
+    return None
+
+
+def _detect_and_replace_curves(
+    shape,
+    mesh: "trimesh.Trimesh",
+    sewing_tol: float,
+    worker_count: int,
+    smooth_freeform: bool = False,
+    shared_edges: list = None,
+):
     """Erkennt volle Zylinder-/Kugelbereiche und ersetzt sie durch
     analytische STEP-Flaechen. Gibt (neues_shape_oder_None, liste_erkannter_formen)
     zurueck. Bei jeglichem Zweifel an der Gueltigkeit wird None
@@ -443,6 +565,7 @@ def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float
         return None, []
 
     triangles = mesh.triangles  # (n_faces, 3, 3)
+    faces_unique_edges = mesh.faces_unique_edges
     regions = _grow_regions_vectorized(mesh)
 
     candidates = []  # (region_indices, points, thresh)
@@ -463,7 +586,7 @@ def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float
         thresh = max(1e-3, extent * 5e-3)
         candidates.append((region, pts, thresh))
 
-    if not candidates:
+    if not candidates and not smooth_freeform:
         return None, []
 
     workers = worker_count or max(1, multiprocessing.cpu_count() - 1)
@@ -604,6 +727,109 @@ def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float
             extent = float(np.linalg.norm(all_pts.max(axis=0) - all_pts.min(axis=0)))
             max_needed_tol = max(max_needed_tol, extent * 1e-2)
 
+    if smooth_freeform and shared_edges is not None:
+        # Uebrig gebliebene GROSSE Freiform-Regionen (kein Zylinder,
+        # keine Kugel, nicht eben) per BRepOffsetAPI_MakeFilling glaetten -
+        # typisch fuer 3D-Scan-Oberflaechen. Die Randkanten der ersetzten
+        # Flaeche sind exakt dieselben (geteilten) Kanten, die die
+        # umgebenden Original-Facetten ohnehin schon verwenden - dadurch
+        # ist KEINE grosse Naht-Toleranz noetig (mehrere eigene Versuche
+        # mit gefitteten B-Spline-Flaechen + Wire-Trimmung scheiterten
+        # zuverlaessig an OpenCASCADE-Topologiefeinheiten; MakeFilling
+        # umgeht das, indem es die Flaeche direkt aus den Randkanten
+        # aufbaut).
+        edge_to_faces_all: dict = {}
+        for fi in range(n_faces):
+            for k in range(3):
+                edge_to_faces_all.setdefault(faces_unique_edges[fi][k], []).append(fi)
+
+        for region in regions:
+            region_set_check = set(region)
+            if region_set_check & replaced_region_indices:
+                continue  # ueberschneidet sich mit einer bereits ersetzten Region
+            if len(region) < MIN_FREEFORM_REGION_FACES:
+                continue
+
+            pts = triangles[region].reshape(-1, 3)
+            centroid = pts.mean(axis=0)
+            _, _, vt = np.linalg.svd(pts - centroid, full_matrices=False)
+            plane_normal = vt[-1]
+            deviations = np.abs((pts - centroid) @ plane_normal)
+            sagitta = float(deviations.max())
+            extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+            if extent < 1e-9:
+                continue
+            # Deutlich empfindlicherer Ebenheits-Schwellwert als bei der
+            # Zylinder-/Kugel-Erkennung: Eine grossflaechige, aber
+            # flache Woelbung (typisch fuer Scan-Oberflaechen) hat oft
+            # ein kleines Verhaeltnis von Pfeilhoehe zu Ausdehnung,
+            # obwohl sie eindeutig eine echte, glaettungswuerdige Form
+            # ist - der 5%-Schwellwert der Rundungserkennung wuerde
+            # solche Bereiche faelschlich als "eben genug" ueberspringen.
+            if sagitta < max(2e-3, extent * 0.003):
+                continue  # tatsaechlich eben -> das erledigt UnifySameDomain
+
+            # Hoehenfeld-PCA nur zur ENTSCHEIDUNG, welche Dreiecke ersetzt
+            # werden (Innenbereich mit Sicherheitsabstand zum Rand) - die
+            # eigentliche Flaeche entsteht danach direkt aus den echten
+            # Randkanten, nicht aus dieser Projektion.
+            _, s_vals, vt2 = np.linalg.svd(pts - centroid, full_matrices=False)
+            if s_vals[1] < 1e-9 or s_vals[2] > 0.6 * s_vals[1]:
+                continue  # kein Hoehenfeld (zu starker Hinterschnitt)
+            u_axis, v_axis = vt2[0], vt2[1]
+            tri_verts = triangles[region]
+            rel = tri_verts - centroid
+            tu = rel @ u_axis
+            tv = rel @ v_axis
+            u_lo, u_hi = tu.min(), tu.max()
+            v_lo, v_hi = tv.min(), tv.max()
+            margin_u = (u_hi - u_lo) * FREEFORM_INTERIOR_MARGIN
+            margin_v = (v_hi - v_lo) * FREEFORM_INTERIOR_MARGIN
+            safe_u = (u_lo + margin_u, u_hi - margin_u)
+            safe_v = (v_lo + margin_v, v_hi - margin_v)
+            covered_mask = (
+                (tu.min(axis=1) >= safe_u[0]) & (tu.max(axis=1) <= safe_u[1])
+                & (tv.min(axis=1) >= safe_v[0]) & (tv.max(axis=1) <= safe_v[1])
+            )
+            covered_indices = [region[i] for i in range(len(region)) if covered_mask[i]]
+            if len(covered_indices) < MIN_FREEFORM_REGION_FACES // 2:
+                continue  # zu wenig tatsaechlich abgedeckt, lohnt sich nicht
+            covered_set = set(covered_indices)
+
+            # Echte Randkanten des abgedeckten Bereichs finden (Kanten,
+            # die zu mindestens einer NICHT abgedeckten Nachbar-Facette
+            # gehoeren) und die dazugehoerigen, bereits geteilten
+            # OCCT-Kantenobjekte holen.
+            region_edge_idx = set()
+            for fi in covered_set:
+                for k in range(3):
+                    region_edge_idx.add(faces_unique_edges[fi][k])
+            boundary_edge_idx = [
+                eidx for eidx in region_edge_idx
+                if len([f for f in edge_to_faces_all.get(eidx, []) if f in covered_set])
+                < len(edge_to_faces_all.get(eidx, []))
+            ]
+            boundary_occ_edges = [shared_edges[eidx] for eidx in boundary_edge_idx]
+
+            covered_pts = triangles[list(covered_set)].reshape(-1, 3)
+            new_face = _build_freeform_filling_patch(boundary_occ_edges, covered_pts)
+
+            detected.append(
+                DetectedShape(
+                    kind="Glaettung",
+                    radius=0.0,
+                    inlier_ratio=1.0,
+                    face_count=len(covered_indices),
+                    replaced=new_face is not None,
+                )
+            )
+            if new_face is not None:
+                replaced_region_indices.update(covered_indices)
+                new_faces_for_regions.append(new_face)
+                # Die Randkanten sind exakt geteilt - keine grosse
+                # Naht-Toleranz noetig, die urspruengliche (kleine)
+                # Sewing-Toleranz reicht aus.
+
     if not new_faces_for_regions:
         return None, detected
 
@@ -643,18 +869,21 @@ def _detect_and_replace_curves(shape, mesh: "trimesh.Trimesh", sewing_tol: float
             shell_exp.Next()
 
     if len(shells) != 1:
+        print(f"DEBUG: shells={len(shells)}, max_needed_tol={max_needed_tol}")
         for d in detected:
             d.replaced = False
         return None, detected  # nicht mehr wasserdicht -> verwerfen
 
     try:
         solid = BRepBuilderAPI_MakeSolid(shells[0]).Solid()
-    except Exception:
+    except Exception as exc:
+        print(f"DEBUG: MakeSolid Exception: {exc}")
         for d in detected:
             d.replaced = False
         return None, detected
 
     if not BRepCheck_Analyzer(solid).IsValid():
+        print(f"DEBUG: solid invalid, max_needed_tol={max_needed_tol}")
         for d in detected:
             d.replaced = False
         return None, detected
@@ -755,7 +984,11 @@ def _count_faces(shape) -> int:
 # nie werden unbearbeitete Rohdreiecke als Endergebnis ausgeliefert.
 def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_range=(15, 38)):
     """Baut einen Volumenkoerper direkt aus geteilter Topologie (ohne
-    BRepBuilderAPI_Sewing). Gibt (solid_oder_None, is_valid) zurueck.
+    BRepBuilderAPI_Sewing). Gibt (solid_oder_None, is_valid, edges_oder_None) zurueck.
+    Das dritte Element ist die Liste der OCCT-Kantenobjekte in derselben
+    Reihenfolge wie mesh.edges_unique - wird von der Freiform-Glaettung
+    weiterverwendet, um exakt geteilte Randkanten wiederzuverwenden statt
+    sie neu zu konstruieren.
 
     Bei grossen Netzen kann allein der Flaechen-Aufbau mehrere Minuten
     dauern - ohne Zwischenmeldung wirkt das in der Weboberflaeche wie
@@ -815,10 +1048,10 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
                     ok = False
                     break
             if not ok or not wm.IsDone():
-                return None, False
+                return None, False, None
             face_maker = BRepBuilderAPI_MakeFace(wm.Wire(), True)
             if not face_maker.IsDone():
-                return None, False
+                return None, False, None
             faces_built.append(face_maker.Face())
 
         builder = TopoDS_Builder()
@@ -829,7 +1062,7 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
 
         solid_maker = BRepBuilderAPI_MakeSolid(shell)
         if not solid_maker.IsDone():
-            return None, False
+            return None, False, None
         solid = solid_maker.Solid()
 
         # Schnelle Topologie-Pruefung statt der vollen geometrischen
@@ -842,18 +1075,18 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
         # eine leichte Verlangsamung - und wird deshalb nicht genutzt.)
         analyzer = BRepCheck_Analyzer(solid, False)
         if not analyzer.IsValid():
-            return None, False
+            return None, False, None
 
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(solid, props)
         if not (props.Mass() > 0):
-            return None, False
+            return None, False, None
 
-        return solid, True
+        return solid, True, edges
     except _MemoryGuardAbort:
         raise
     except Exception:
-        return None, False
+        return None, False, None
 
 
 # --------------------------------------------------------------------------
@@ -936,6 +1169,7 @@ def convert_stl_to_step(
         # statt abzustuerzen - hier wird dann automatisch mit staerkerer
         # Vereinfachung neu versucht, bis zu 3 Mal.
         memory_exhausted = False
+        shared_edges = None  # OCCT-Kantenobjekte (geteilte Topologie) - fuer Freiform-Glaettung
         if mesh.is_watertight and mesh.is_winding_consistent:
             for attempt in range(3):
                 report(
@@ -944,11 +1178,11 @@ def convert_stl_to_step(
                     "(schneller Pfad, ohne Vernaehen) ...",
                 )
                 try:
-                    fast_solid, fast_valid = _build_solid_shared_topology(
+                    fast_solid, fast_valid, fast_edges = _build_solid_shared_topology(
                         mesh, progress_cb=report, pct_range=(15, 36)
                     )
                 except _MemoryGuardAbort:
-                    fast_solid, fast_valid = None, False
+                    fast_solid, fast_valid, fast_edges = None, False, None
                     if attempt >= 2:
                         memory_exhausted = True
                         break
@@ -967,6 +1201,7 @@ def convert_stl_to_step(
                 if fast_valid:
                     base_shape = fast_solid
                     is_solid = True
+                    shared_edges = fast_edges
                     report(38, "Volumenkoerper erfolgreich ohne Vernaehen aufgebaut.")
                 break
 
@@ -1036,16 +1271,22 @@ def convert_stl_to_step(
         detected_shapes = []
         result_shape = base_shape
 
-        if settings.detect_curved_shapes and is_solid and len(mesh.faces) == faces_before:
-            report(50, "Suche volle Zylinder-/Kugelbereiche (mehrere Kerne) ...")
+        run_detection = (settings.detect_curved_shapes or settings.smooth_scan_surfaces) and is_solid and len(mesh.faces) == faces_before
+        if run_detection:
+            report(50, "Suche volle Zylinder-/Kugelbereiche und/oder Scan-Rauschen (mehrere Kerne) ...")
             try:
                 replaced_solid, detected_shapes = _detect_and_replace_curves(
-                    base_shape, mesh, tol, settings.worker_count
+                    base_shape,
+                    mesh,
+                    tol,
+                    settings.worker_count,
+                    smooth_freeform=settings.smooth_scan_surfaces,
+                    shared_edges=shared_edges,
                 )
                 if replaced_solid is not None:
                     result_shape = replaced_solid
                     n_replaced = sum(1 for d in detected_shapes if d.replaced)
-                    report(68, f"{n_replaced} Rundung(en) durch echte STEP-Flaechen ersetzt.")
+                    report(68, f"{n_replaced} Bereich(e) durch echte STEP-Flaechen ersetzt.")
             except Exception:
                 traceback.print_exc()
                 detected_shapes = []

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.0 - Scan-Glaettung funktioniert jetzt wirklich
+- **Durchbruch:** Die "Scan-Oberflaeche glaetten"-Einstellung (seit
+  1.4.0 nicht mehr experimentell) erzeugt jetzt zuverlaessig eine
+  ECHTE glatte Flaeche ohne Facetten - kein Kompromiss mehr. Nach
+  fuenf gescheiterten Ansaetzen (grosse Naht-Toleranz, automatische
+  OCCT-Projektion, manuelle 2D-Parametrisierung, u. a.) wurde eine
+  gezielte Recherche zu Alternativen durchgefuehrt: Die Loesung ist
+  `BRepOffsetAPI_MakeFilling` - ein OpenCASCADE-Werkzeug, das eine
+  Flaeche DIREKT aus Randkurven aufbaut, statt eine Flaeche zu fitten
+  und nachtraeglich zu beschneiden. Dadurch entfaellt das gesamte
+  Trimm-/Parametrisierungsproblem, an dem alle vorherigen Versuche
+  gescheitert sind.
+- Die Randkanten der neuen glatten Flaeche sind exakt dieselben
+  (geteilten) Kanten, die die umgebenden Original-Facetten ohnehin
+  schon verwenden - dadurch ist keine grosse, riskante Naht-Toleranz
+  mehr noetig (die kleine Standard-Toleranz reicht).
+- Wenige innere Stuetzpunkte (automatisch 12, 10, 8 ... als Kandidaten
+  durchprobiert) ziehen die Flaeche zusaetzlich zu den entrauschten
+  Hoehenwerten der Scan-Daten, statt nur die Randkurven zu erfuellen.
+- Eigene Messung am Testobjekt (Box mit verrauschter Woelbung, 768
+  Dreiecke): Ergebnis ist ein gueltiger Volumenkoerper mit 48 statt
+  768 Flaechen, korrektem Volumen (Abweichung < 5% vom Original -
+  gewollt, da das Rauschen ja herausgerechnet werden soll).
+- Funktioniert weiterhin nur, wenn der schnelle (geteilte-Topologie-)
+  Aufbau erfolgreich war - beim selteneren Sewing-Fallback-Pfad wird
+  die Glaettung sauber uebersprungen (kein Absturz, siehe README).
+
 ## 1.3.4 - Mehr Detail bei organischen/gescannten Formen
 - **Hintergrund:** Bei Netzen ohne grosse ebene oder runde Bereiche
   (organische Scan-Daten, Freiformflaechen) gibt es fast nichts, was

@@ -29,6 +29,7 @@ const decimate = document.getElementById("decimate");
 const decimateVal = document.getElementById("decimateVal");
 const mergePlanar = document.getElementById("mergePlanar");
 const detectShapes = document.getElementById("detectShapes");
+const smoothScan = document.getElementById("smoothScan");
 
 const previewPanel = document.getElementById("previewPanel");
 const tabBefore = document.getElementById("tabBefore");
@@ -55,6 +56,7 @@ function currentSettings() {
     decimate_percent: decimate.value,
     merge_planar: mergePlanar.checked ? "1" : "0",
     detect_curved_shapes: detectShapes.checked ? "1" : "0",
+    smooth_scan_surfaces: smoothScan.checked ? "1" : "0",
   };
 }
 

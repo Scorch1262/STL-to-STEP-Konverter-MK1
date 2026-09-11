@@ -61,11 +61,22 @@
             <input type="checkbox" id="detectShapes" checked>
           </div>
 
+          <div class="setting-row setting-row-toggle">
+            <label for="smoothScan">Scan-Oberfläche glätten (NURBS)</label>
+            <input type="checkbox" id="smoothScan">
+          </div>
+
           <p class="settings-hint">
             Volle Zylinder (Bohrungen, Wellen), Kugeln und Wölbungen
             werden automatisch durch echte, glatte STEP-Flächen
             ersetzt. Teilausschnitte, Verrundungen mit wechselndem
             Radius und Freiformflächen bleiben als Facetten erhalten.
+            "Scan-Oberfläche glätten" wandelt unebene, verrauschte
+            Freiformbereiche (z. B. 3D-Scans) im Inneren in eine echte
+            glatte Fläche ohne Facetten um - am Rand bleibt ein
+            schmaler Streifen Facetten für einen sicheren Übergang
+            stehen. Funktioniert am besten bei Flächen ohne starke
+            Hinterschnitte (aus einer Blickrichtung scanbar).
           </p>
         </details>
 
