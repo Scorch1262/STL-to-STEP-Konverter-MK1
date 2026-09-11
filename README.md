@@ -95,16 +95,18 @@ kann, sobald er eintritt.
 
 **Deshalb schätzt das Programm beim Start automatisch**, wie viele
 Dreiecke der tatsächlich verfügbare Arbeitsspeicher sicher zulässt
-(über `psutil`, mit Sicherheitsabstand), und bricht bei zu großen
-Dateien sofort mit einer klaren Fehlermeldung ab, statt zu hängen oder
-abzustürzen. **Praktische Empfehlung für sehr große Dateien:** die
-Einstellung „Vereinfachung" (Dezimierung) *zuerst* nutzen, um die
-Dreieckszahl auf ein handhabbares Maß zu reduzieren - dieser Schritt
-läuft in einer schnellen, für große Netze ausgelegten Bibliothek
-(`fast-simplification`) und passiert *vor* dem OpenCASCADE-Aufbau, ist
-also von dieser Speichergrenze nicht betroffen. Ab automatisch 300.000
-Dreiecken wird zusätzlich die Zylinder-/Kugel-Erkennung übersprungen
-(reine Flächenrückführung läuft trotzdem weiter).
+(über `psutil`, mit Sicherheitsabstand). Reicht die vom Nutzer
+gewählte (oder keine) Vereinfachung nicht aus, um darunter zu bleiben,
+wird **automatisch zusätzlich nachdezimiert** - der Nutzer muss also
+nicht selbst den passenden Prozentwert erraten. Ein Fehlerabbruch
+erfolgt nur noch, wenn selbst ein stark vereinfachtes Netz (unter 200
+Dreiecke) nicht mehr in den verfügbaren Speicher passen würde. Die
+Vereinfachung selbst läuft in einer schnellen, für große Netze
+ausgelegten Bibliothek (`fast-simplification`) und passiert *vor* dem
+OpenCASCADE-Aufbau, ist also von dieser Speichergrenze nicht betroffen.
+Ab automatisch 300.000 Dreiecken wird zusätzlich die Zylinder-/Kugel-
+Erkennung übersprungen (reine Flächenrückführung läuft trotzdem
+weiter).
 
 Während des Aufbaus selbst wird jetzt außerdem laufend der Fortschritt
 gemeldet ("Facette X von Y"), damit auch eine mehrminütige Umwandlung

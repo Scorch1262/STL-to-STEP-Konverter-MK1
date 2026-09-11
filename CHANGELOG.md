@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.3 - Fix: Manuelle Vereinfachung reichte nicht aus
+- **Problem:** Bei sehr grossen Dateien (mehrere Millionen Dreiecke)
+  auf Rechnern mit wenig freiem Arbeitsspeicher reichte selbst die
+  staerkste manuell einstellbare Vereinfachung (bisher min. 10%) nicht
+  aus, um unter die Speichergrenze zu kommen - der Nutzer haette den
+  exakt passenden Prozentwert erraten muessen, ohne dass der Regler
+  fein genug war.
+- **Fix: automatische Nachdezimierung.** Reicht die vom Nutzer gewaehlte
+  (oder keine) Vereinfachung nicht aus, wird das Netz jetzt automatisch
+  zusaetzlich so weit vereinfacht, dass es sicher in den verfuegbaren
+  Arbeitsspeicher passt - mit klarer Meldung im Fortschritt, was
+  passiert ist. Ein Fehlerabbruch erfolgt nur noch, wenn selbst ein
+  stark vereinfachtes Netz (unter 200 Dreiecke) nicht mehr passen
+  wuerde (praktisch nur bei extrem wenig freiem Speicher).
+- Der "Vereinfachung"-Regler auf der Weboberflaeche erlaubt jetzt Werte
+  von 1-100% (vorher 10-100% in 5%-Schritten) fuer feinere manuelle
+  Kontrolle, falls gewuenscht.
+
 ## 1.3.2 - Fix: Speichergrenze schrumpfte bei wiederholten Versuchen
 - **Architektur-Fix:** Die eigentliche Umwandlung laeuft jetzt in
   einem EIGENEN Prozess statt nur in einem Thread innerhalb des

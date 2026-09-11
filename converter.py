@@ -168,7 +168,7 @@ class ConversionSettings:
 
         return cls(
             smoothing_iterations=_int("smoothing_iterations", 0, 0, 10),
-            decimate_percent=_int("decimate_percent", 100, 10, 100),
+            decimate_percent=_int("decimate_percent", 100, 1, 100),
             merge_planar=str(form.get("merge_planar", "1")) not in ("0", "false", "False"),
             detect_curved_shapes=str(form.get("detect_curved_shapes", "1")) not in ("0", "false", "False"),
             worker_count=_int("worker_count", 0, 0, 64),
@@ -833,14 +833,31 @@ def convert_stl_to_step(
             raise ConversionError("Die STL-Datei enthaelt keine Dreiecke.")
 
         max_faces_practical = _max_faces_practical()
+        MIN_USEFUL_FACES = 200
         if faces_before > max_faces_practical:
-            raise ConversionError(
-                f"Das Netz hat {faces_before:,} Dreiecke - das ist zu viel fuer den "
-                f"verfuegbaren Arbeitsspeicher (aktuell reicht es fuer ca. "
-                f"{max_faces_practical:,} Dreiecke). Bitte die Einstellung "
-                "\"Vereinfachung\" (Dezimierung) nutzen, um die Dreieckszahl vorher zu "
-                "reduzieren, und die Umwandlung erneut starten."
+            if max_faces_practical < MIN_USEFUL_FACES:
+                raise ConversionError(
+                    "Der verfuegbare Arbeitsspeicher reicht aktuell nicht einmal fuer ein "
+                    "stark vereinfachtes Netz aus. Bitte andere Anwendungen schliessen, um "
+                    "Arbeitsspeicher freizugeben, und die Umwandlung erneut starten."
+                )
+            # Statt den Nutzer per Vereinfachungs-Regler die passende
+            # Prozentzahl raten zu lassen (die Aufloesung des Reglers
+            # reicht bei sehr grossen Dateien / wenig Speicher oft nicht
+            # aus), wird automatisch NACHDEZIMIERT, bis das Netz sicher
+            # in den verfuegbaren Speicher passt - mit etwas Puffer
+            # nach unten, da der Speicherbedarf je nach Netzform leicht
+            # schwanken kann.
+            target = max(MIN_USEFUL_FACES, int(max_faces_practical * 0.85))
+            report(
+                13,
+                f"Netz hat {faces_before:,} Dreiecke - mehr als der verfuegbare "
+                f"Arbeitsspeicher sicher zulaesst (ca. {max_faces_practical:,}). "
+                f"Vereinfache automatisch weiter auf ca. {target:,} Dreiecke ...",
             )
+            mesh = mesh.simplify_quadric_decimation(face_count=target)
+            mesh.export(preprocessed_path)
+            faces_before = len(mesh.faces)
 
         tol = float(np.linalg.norm(mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0))) * 1e-5
         tol = max(tol, 1e-6)
