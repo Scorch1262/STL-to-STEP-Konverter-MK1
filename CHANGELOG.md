@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.4 - Mehr Detail bei organischen/gescannten Formen
+- **Hintergrund:** Bei Netzen ohne grosse ebene oder runde Bereiche
+  (organische Scan-Daten, Freiformflaechen) gibt es fast nichts, was
+  sich zu wenigen grossen Flaechen zusammenfassen liesse - fast jedes
+  Dreieck bleibt eine eigene Facette. Die bisherige, vorsichtig
+  geschaetzte Speichergrenze fuehrte hier zu spuerbar grobem,
+  kantigem Ergebnis, weil automatisch zu stark vereinfacht wurde.
+- **Grosszuegigere Grenze:** Da ein Fehlschlag seit 1.3.2 nur noch den
+  einen Umwandlungs-Prozess betrifft (nicht mehr den ganzen
+  Webserver), darf die a-priori-Schaetzung jetzt naeher an das
+  tatsaechliche Limit herangehen (Sicherheitsfaktor 0,5 -> 0,7,
+  Speicherschaetzung pro Dreieck 22.000 -> 19.000 Bytes, naeher an der
+  gemessenen Realitaet). In eigenen Tests ca. 60% mehr nutzbare
+  Dreieckszahl bei gleichem verfuegbarem Speicher.
+- **Neu: Live-Speicherueberwachung waehrend des Aufbaus.** Statt sich
+  nur auf die Vorab-Schaetzung zu verlassen, wird der tatsaechlich
+  verfuegbare Speicher waehrend des Aufbaus laufend geprueft. Wird er
+  knapp, bricht der Aufbau sauber ab (kein Absturz) und startet
+  automatisch mit staerkerer Vereinfachung neu (bis zu 3 Versuche).
+  Das erlaubt es, so nah wie moeglich an das tatsaechliche Limit
+  heranzugehen, ohne das Absturzrisiko zu erhoehen.
+- Reicht der Speicher auch nach mehrfachem automatischem Nachschaerfen
+  nicht aus, wird sauber mit einer klaren Fehlermeldung abgebrochen
+  (der bisherige, noch speicherhungrigere Sewing-Fallback wird in
+  diesem Fall bewusst NICHT mehr versucht, da er das Problem eher
+  verschaerfen als loesen wuerde).
+
 ## 1.3.3 - Fix: Manuelle Vereinfachung reichte nicht aus
 - **Problem:** Bei sehr grossen Dateien (mehrere Millionen Dreiecke)
   auf Rechnern mit wenig freiem Arbeitsspeicher reichte selbst die

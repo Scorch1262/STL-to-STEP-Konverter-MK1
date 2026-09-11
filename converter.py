@@ -131,8 +131,21 @@ MAX_FACES_FOR_NORMAL_REPAIR = 1_500_000
 # Grenze wird sofort (statt nach langem Warten oder einem Absturz) eine
 # klare, umsetzbare Fehlermeldung ausgegeben, die zur "Vereinfachung"-
 # Einstellung (Dezimierung) verweist.
-BYTES_PER_FACE_ESTIMATE = 22_000  # mit Sicherheitsaufschlag auf die Messung
-MEMORY_SAFETY_FACTOR = 0.5
+BYTES_PER_FACE_ESTIMATE = 19_000  # naeher an der Messung (vorher 22.000)
+MEMORY_SAFETY_FACTOR = 0.7  # vorher 0.5 - siehe Begruendung unten
+# Die a-priori-Schaetzung dient nur als grobe erste Zielgroesse fuer die
+# automatische Nachdezimierung (siehe unten) - sie darf jetzt bewusst
+# grosszuegiger sein als vor der Prozess-Isolation (v1.3.2): schlaegt
+# sie fehl, stuerzt seitdem nicht mehr der ganze Webserver ab, sondern
+# hoechstens der eine Umwandlungs-Prozess, der sauber neu startet.
+# Zusaetzliche Absicherung ist die LIVE-Speicherueberwachung waehrend
+# des Aufbaus (siehe MEMORY_GUARD_FLOOR_BYTES): bricht der tatsaechlich
+# verfuegbare Speicher waehrend des Aufbaus zu knapp werden, wird
+# SAUBER abgebrochen (statt hart abzustuerzen) und automatisch mit
+# staerkerer Vereinfachung neu versucht - dadurch kann die Zielgroesse
+# naeher an das tatsaechliche Limit herangehen, ohne das Risiko eines
+# Absturzes zu erhoehen.
+MEMORY_GUARD_FLOOR_BYTES = 300 * 1024 * 1024  # 300 MB Sicherheitsreserve
 FALLBACK_MAX_FACES_PRACTICAL = 150_000  # falls psutil nicht verfuegbar ist
 
 
@@ -197,6 +210,26 @@ class ConversionResult:
 
 class ConversionError(Exception):
     pass
+
+
+class _MemoryGuardAbort(Exception):
+    """Interner Abbruch, wenn der Aufbau live zu nah an die
+    Speichergrenze kommt - wird von convert_stl_to_step abgefangen und
+    loest einen automatischen Neuversuch mit staerkerer Vereinfachung
+    aus, statt das Programm abstuerzen zu lassen."""
+    pass
+
+
+def _check_memory_guard() -> None:
+    if psutil is None:
+        return
+    try:
+        if psutil.virtual_memory().available < MEMORY_GUARD_FLOOR_BYTES:
+            raise _MemoryGuardAbort("Verfuegbarer Arbeitsspeicher wird waehrend des Aufbaus knapp.")
+    except _MemoryGuardAbort:
+        raise
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -735,18 +768,32 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
         edges_unique = mesh.edges_unique
         faces_unique_edges = mesh.faces_unique_edges
         n = len(F)
+        n_verts = len(V)
+        n_edges = len(edges_unique)
 
-        verts = [
-            BRepBuilderAPI_MakeVertex(gp_Pnt(float(x), float(y), float(z))).Vertex()
-            for x, y, z in V
-        ]
-        edges = [BRepBuilderAPI_MakeEdge(verts[int(a)], verts[int(b)]).Edge() for a, b in edges_unique]
+        guard_every = max(1, n // 20)  # ca. 20 Speicherpruefungen ueber die Laufzeit
+
+        verts = []
+        for vi in range(n_verts):
+            if vi % (max(1, n_verts // 10)) == 0:
+                _check_memory_guard()
+            x, y, z = V[vi]
+            verts.append(BRepBuilderAPI_MakeVertex(gp_Pnt(float(x), float(y), float(z))).Vertex())
+
+        edges = []
+        for ei in range(n_edges):
+            if ei % (max(1, n_edges // 10)) == 0:
+                _check_memory_guard()
+            a, b = edges_unique[ei]
+            edges.append(BRepBuilderAPI_MakeEdge(verts[int(a)], verts[int(b)]).Edge())
 
         pct_lo, pct_hi = pct_range
         report_every = max(1, n // 40)  # ca. 40 Zwischenmeldungen ueber die ganze Schleife
 
         faces_built = []
         for fi in range(n):
+            if fi % guard_every == 0:
+                _check_memory_guard()
             if progress_cb and fi % report_every == 0:
                 frac = fi / n
                 pct = int(pct_lo + (pct_hi - pct_lo) * frac)
@@ -803,6 +850,8 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
             return None, False
 
         return solid, True
+    except _MemoryGuardAbort:
+        raise
     except Exception:
         return None, False
 
@@ -871,13 +920,71 @@ def convert_stl_to_step(
         # wicklungskonsistent einstuft - sonst waere die Kantenrichtung
         # pro Facette nicht eindeutig bestimmbar und der Versuch wuerde
         # ohnehin scheitern.
+        # Schneller Pfad: Volumenkoerper direkt aus geteilter Topologie
+        # aufbauen (kein Sewing noetig, siehe _build_solid_shared_topology).
+        # Nur versuchen, wenn trimesh das Netz bereits als wasserdicht und
+        # wicklungskonsistent einstuft - sonst waere die Kantenrichtung
+        # pro Facette nicht eindeutig bestimmbar und der Versuch wuerde
+        # ohnehin scheitern.
+        #
+        # Live-Speicherueberwachung mit automatischem Neuversuch: die
+        # a-priori-Schaetzung (oben) ist bewusst grosszuegig, damit bei
+        # Netzen ohne grosse ebene/runde Bereiche (z. B. organische
+        # Scan-Daten) moeglichst viel Detail erhalten bleibt. Wird der
+        # Speicher waehrend des Aufbaus trotzdem zu knapp, bricht
+        # _build_solid_shared_topology SAUBER ab (_MemoryGuardAbort)
+        # statt abzustuerzen - hier wird dann automatisch mit staerkerer
+        # Vereinfachung neu versucht, bis zu 3 Mal.
+        memory_exhausted = False
         if mesh.is_watertight and mesh.is_winding_consistent:
-            report(15, f"Netz eingelesen ({faces_before} Dreiecke). Baue Volumenkoerper (schneller Pfad, ohne Vernaehen) ...")
-            fast_solid, fast_valid = _build_solid_shared_topology(mesh, progress_cb=report, pct_range=(15, 36))
-            if fast_valid:
-                base_shape = fast_solid
-                is_solid = True
-                report(38, "Volumenkoerper erfolgreich ohne Vernaehen aufgebaut.")
+            for attempt in range(3):
+                report(
+                    15,
+                    f"Netz eingelesen ({faces_before:,} Dreiecke). Baue Volumenkoerper "
+                    "(schneller Pfad, ohne Vernaehen) ...",
+                )
+                try:
+                    fast_solid, fast_valid = _build_solid_shared_topology(
+                        mesh, progress_cb=report, pct_range=(15, 36)
+                    )
+                except _MemoryGuardAbort:
+                    fast_solid, fast_valid = None, False
+                    if attempt >= 2:
+                        memory_exhausted = True
+                        break
+                    target = max(MIN_USEFUL_FACES, int(len(mesh.faces) * 0.6))
+                    report(
+                        15,
+                        f"Arbeitsspeicher wurde waehrend des Aufbaus knapp - "
+                        f"vereinfache automatisch staerker auf ca. {target:,} "
+                        "Dreiecke und versuche es erneut ...",
+                    )
+                    mesh = mesh.simplify_quadric_decimation(face_count=target)
+                    mesh.export(preprocessed_path)
+                    faces_before = len(mesh.faces)
+                    continue
+
+                if fast_valid:
+                    base_shape = fast_solid
+                    is_solid = True
+                    report(38, "Volumenkoerper erfolgreich ohne Vernaehen aufgebaut.")
+                break
+
+        if memory_exhausted:
+            # Der Speicher wurde auch nach mehrfacher automatischer
+            # Nachdezimierung waehrend des Aufbaus knapp. Der aeltere
+            # Sewing-Pfad braucht tendenziell EHER mehr als weniger
+            # Speicher fuer dieselbe Dreieckszahl - ein Versuch dort
+            # wuerde das Problem also eher verschaerfen als loesen.
+            # Deshalb hier sauber mit einer klaren Meldung abbrechen,
+            # statt einen aussichtslosen, riskanten Versuch zu starten.
+            raise ConversionError(
+                "Der verfuegbare Arbeitsspeicher reicht auch nach automatischer "
+                "Nachdezimierung nicht zuverlaessig aus. Bitte andere Anwendungen "
+                "schliessen, um Arbeitsspeicher freizugeben, oder die Einstellung "
+                "\"Vereinfachung\" manuell auf einen niedrigeren Wert stellen, und "
+                "die Umwandlung erneut starten."
+            )
 
         if base_shape is None:
             # Sicherheitsnetz: der schnelle Pfad konnte keinen gueltigen

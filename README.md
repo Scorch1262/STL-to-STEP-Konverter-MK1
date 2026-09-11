@@ -95,18 +95,31 @@ kann, sobald er eintritt.
 
 **Deshalb schätzt das Programm beim Start automatisch**, wie viele
 Dreiecke der tatsächlich verfügbare Arbeitsspeicher sicher zulässt
-(über `psutil`, mit Sicherheitsabstand). Reicht die vom Nutzer
-gewählte (oder keine) Vereinfachung nicht aus, um darunter zu bleiben,
-wird **automatisch zusätzlich nachdezimiert** - der Nutzer muss also
-nicht selbst den passenden Prozentwert erraten. Ein Fehlerabbruch
-erfolgt nur noch, wenn selbst ein stark vereinfachtes Netz (unter 200
-Dreiecke) nicht mehr in den verfügbaren Speicher passen würde. Die
-Vereinfachung selbst läuft in einer schnellen, für große Netze
-ausgelegten Bibliothek (`fast-simplification`) und passiert *vor* dem
-OpenCASCADE-Aufbau, ist also von dieser Speichergrenze nicht betroffen.
-Ab automatisch 300.000 Dreiecken wird zusätzlich die Zylinder-/Kugel-
-Erkennung übersprungen (reine Flächenrückführung läuft trotzdem
-weiter).
+(über `psutil`). Reicht die vom Nutzer gewählte (oder keine)
+Vereinfachung nicht aus, um darunter zu bleiben, wird **automatisch
+zusätzlich nachdezimiert** - der Nutzer muss also nicht selbst den
+passenden Prozentwert erraten.
+
+**Wie viel Detail dabei erhalten bleibt, hängt stark von der Geometrie
+ab:** Bei technischen/mechanischen Teilen (Platten, Bohrungen, Wellen)
+werden grosse ebene und runde Bereiche ohnehin zu wenigen echten
+Flächen zusammengefasst (siehe oben) - dort wirkt sich die
+Speichergrenze kaum auf die sichtbare Qualität aus. Bei organischen
+oder gescannten Formen (Freiform, kaum ebene/runde Bereiche) bleibt
+dagegen fast jedes Dreieck eine eigene Facette, und eine notwendige
+Vereinfachung ist dort direkt als gröbere, kantigere Oberfläche
+sichtbar. Für diesen Fall geht das Programm bewusst so nah wie möglich
+an das tatsächliche Speicherlimit heran (nicht nur pauschal
+vorsichtig): Eine **Live-Überwachung** während des Aufbaus bricht bei
+tatsächlich knapp werdendem Speicher sauber ab (kein Absturz) und
+startet automatisch mit etwas stärkerer Vereinfachung neu - bis zu
+dreimal. Nur wenn das nicht ausreicht, erfolgt ein klarer
+Fehlerabbruch. Die Vereinfachung selbst läuft in einer schnellen, für
+große Netze ausgelegten Bibliothek (`fast-simplification`) und
+passiert *vor* dem OpenCASCADE-Aufbau, ist also von dieser
+Speichergrenze nicht betroffen. Ab automatisch 300.000 Dreiecken wird
+zusätzlich die Zylinder-/Kugel-Erkennung übersprungen (reine
+Flächenrückführung läuft trotzdem weiter).
 
 Während des Aufbaus selbst wird jetzt außerdem laufend der Fortschritt
 gemeldet ("Facette X von Y"), damit auch eine mehrminütige Umwandlung
