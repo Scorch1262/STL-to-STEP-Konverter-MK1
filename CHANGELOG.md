@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.2 - Versionsnummer wieder im GitHub-Actions-Build sichtbar
+- Der Build-Workflow liest jetzt zu Beginn die Versionsnummer aus
+  `version.py` aus und verwendet sie im PyInstaller-Programmnamen
+  sowie in den Namen der Artefakt-/Release-Zip-Dateien (z. B.
+  `STL-STEP-Konverter-MK1-v1.5.2-windows.zip` statt nur
+  `STL-STEP-Konverter-MK1-windows.zip`).
+
 ## 1.5.1 - Fix: Build-Fehler durch falsche pymeshfix-Versionsangabe
 - **Build-Fix:** `requirements.txt` verlangte faelschlich
   `pymeshfix>=1.0` - diese Bibliothek hat aber nie eine 1.x-Version
