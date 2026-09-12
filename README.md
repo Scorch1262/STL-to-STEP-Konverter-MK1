@@ -120,6 +120,19 @@ nicht vollständig, fällt die Umwandlung wie gehabt ehrlich auf die
 „Netz nicht wasserdicht"-Meldung zurück - es wird nie ein falscher
 Volumenkörper vorgetäuscht.
 
+## Mehrkörper-Dateien (mehrere getrennte Teile in einer STL)
+
+Eine STL-Datei enthält oft mehrere getrennte, jeweils für sich
+geschlossene Teile - z. B. einen Rahmen mit mehreren nicht verbundenen
+Anbauteilen wie Propellern. Ein solches Netz gilt als Ganzes zwar
+bereits als "wasserdicht" (jede Kante gehört zu zwei Facetten), besteht
+aber aus mehreren getrennten Hüllen statt einer einzigen. Das Programm
+erkennt das automatisch, verarbeitet **jeden Körper einzeln** durch die
+komplette Pipeline (inklusive Zylinder-/Kugel-Erkennung und
+Flächenrückführung) und fügt die Ergebnisse anschließend zu einer
+gemeinsamen STEP-Datei zusammen. Erkannte Formen (z. B. mehrere Kugeln
+unterschiedlicher Größe) werden dabei pro Körper einzeln gemeldet.
+
 **Verbleibende, ehrliche Grenze - Arbeitsspeicher, nicht nur Zeit:**
 Der Flächen-Aufbau läuft als Python-Schleife über jede Facette (mehrere
 OpenCASCADE-Aufrufe pro Dreieck) - das ist inzwischen linear statt

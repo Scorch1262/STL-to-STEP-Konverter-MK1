@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import math
 import multiprocessing
+import os
+import tempfile
 import traceback
 import warnings
 from dataclasses import dataclass, field
@@ -57,7 +59,7 @@ import numpy as np
 import trimesh
 
 from OCP.StlAPI import StlAPI_Reader, StlAPI_Writer
-from OCP.TopoDS import TopoDS_Shape, TopoDS, TopoDS_Shell, TopoDS_Builder
+from OCP.TopoDS import TopoDS_Shape, TopoDS, TopoDS_Shell, TopoDS_Builder, TopoDS_Compound
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_Sewing,
     BRepBuilderAPI_MakeSolid,
@@ -1122,6 +1124,115 @@ def _build_solid_shared_topology(mesh: "trimesh.Trimesh", progress_cb=None, pct_
 # Hauptfunktion
 # --------------------------------------------------------------------------
 
+def _build_body_shape(mesh: "trimesh.Trimesh", settings: ConversionSettings, tol: float, report, allow_memory_retry: bool = True):
+    """Baut die Form (Volumenkoerper oder offene Flaeche) fuer EINEN
+    zusammenhaengenden Netzkoerper - wird sowohl fuer Ein-Koerper- als
+    auch fuer Mehrkoerper-Netze (mehrere getrennte Teile in einer
+    Datei, z. B. ein Rahmen mit mehreren Anbauteilen) verwendet.
+
+    Gibt (shape, is_solid, detected_shapes, memory_exhausted) zurueck.
+    """
+    is_solid = False
+    base_shape = None
+    shared_edges = None
+    memory_exhausted = False
+    working_mesh = mesh
+
+    if working_mesh.is_watertight and working_mesh.is_winding_consistent:
+        attempts = 3 if allow_memory_retry else 1
+        for attempt in range(attempts):
+            try:
+                fast_solid, fast_valid, fast_edges = _build_solid_shared_topology(
+                    working_mesh, progress_cb=report, pct_range=(15, 36)
+                )
+            except _MemoryGuardAbort:
+                if not allow_memory_retry or attempt >= attempts - 1:
+                    memory_exhausted = True
+                    break
+                target = max(200, int(len(working_mesh.faces) * 0.6))
+                report(15, f"Arbeitsspeicher wurde knapp - vereinfache automatisch staerker auf ca. {target:,} Dreiecke ...")
+                working_mesh = working_mesh.simplify_quadric_decimation(face_count=target)
+                continue
+
+            if fast_valid:
+                base_shape = fast_solid
+                is_solid = True
+                shared_edges = fast_edges
+            break
+
+    if memory_exhausted:
+        return None, False, [], True
+
+    if base_shape is None:
+        # Sewing-Fallback: braucht eine Datei fuer StlAPI_Reader, deshalb
+        # ueber eine temporaere Datei statt direkt aus dem mesh-Objekt.
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".stl")
+        os.close(tmp_fd)
+        try:
+            working_mesh.export(tmp_path)
+            shape = TopoDS_Shape()
+            reader = StlAPI_Reader()
+            if not reader.Read(shape, tmp_path):
+                raise ConversionError("STL-Datei konnte nicht gelesen werden.")
+
+            sewing = BRepBuilderAPI_Sewing(tol)
+            sewing.Add(shape)
+            sewing.Perform()
+            sewed = sewing.SewedShape()
+
+            exp = TopExp_Explorer(sewed, TopAbs_SHELL)
+            shells = []
+            while exp.More():
+                shells.append(TopoDS.Shell(exp.Current()))
+                exp.Next()
+
+            base_shape = sewed
+            if len(shells) == 1:
+                try:
+                    maker = BRepBuilderAPI_MakeSolid(shells[0])
+                    if maker.IsDone():
+                        solid = maker.Solid()
+                        if BRepCheck_Analyzer(solid).IsValid():
+                            base_shape = solid
+                            is_solid = True
+                except Exception:
+                    pass
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    detected_shapes = []
+    result_shape = base_shape
+
+    run_detection = (settings.detect_curved_shapes or settings.smooth_scan_surfaces) and is_solid
+    if run_detection:
+        try:
+            replaced_solid, detected_shapes = _detect_and_replace_curves(
+                base_shape,
+                working_mesh,
+                tol,
+                settings.worker_count,
+                smooth_freeform=settings.smooth_scan_surfaces,
+                shared_edges=shared_edges,
+            )
+            if replaced_solid is not None:
+                result_shape = replaced_solid
+        except Exception:
+            traceback.print_exc()
+            detected_shapes = []
+
+    if settings.merge_planar:
+        unify = ShapeUpgrade_UnifySameDomain(result_shape, True, True, True)
+        unify.SetLinearTolerance(tol)
+        unify.SetAngularTolerance(1e-3)
+        unify.Build()
+        result_shape = unify.Shape()
+
+    return result_shape, is_solid, detected_shapes, False
+
+
 def convert_stl_to_step(
     input_path: str,
     output_path: str,
@@ -1173,160 +1284,201 @@ def convert_stl_to_step(
         tol = float(np.linalg.norm(mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0))) * 1e-5
         tol = max(tol, 1e-6)
 
-        is_solid = False
-        base_shape = None
+        # Mehrkoerper-Erkennung: eine STL-Datei kann mehrere getrennte,
+        # jeweils fuer sich geschlossene Teile enthalten (z. B. ein
+        # Rahmen mit mehreren nicht verbundenen Anbauteilen). Trimesh
+        # stuft so ein Netz insgesamt trotzdem als "wasserdicht" ein
+        # (jede Kante hat ja zwei Facetten) - aber der EINE-Huelle-Bau
+        # weiter unten wuerde es faelschlich als "nicht wasserdicht"
+        # (mehrere Teil-Huellen) verwerfen. Deshalb: getrennte Koerper
+        # zuerst erkennen und JEDEN EINZELN durch dieselbe Pipeline
+        # schicken, statt das ganze Netz auf einmal zu behandeln.
+        try:
+            bodies = mesh.split(only_watertight=False)
+        except Exception:
+            bodies = [mesh]
+        if len(bodies) == 0:
+            bodies = [mesh]
 
-        # Schneller Pfad: Volumenkoerper direkt aus geteilter Topologie
-        # aufbauen (kein Sewing noetig, siehe _build_solid_shared_topology).
-        # Nur versuchen, wenn trimesh das Netz bereits als wasserdicht und
-        # wicklungskonsistent einstuft - sonst waere die Kantenrichtung
-        # pro Facette nicht eindeutig bestimmbar und der Versuch wuerde
-        # ohnehin scheitern.
-        # Schneller Pfad: Volumenkoerper direkt aus geteilter Topologie
-        # aufbauen (kein Sewing noetig, siehe _build_solid_shared_topology).
-        # Nur versuchen, wenn trimesh das Netz bereits als wasserdicht und
-        # wicklungskonsistent einstuft - sonst waere die Kantenrichtung
-        # pro Facette nicht eindeutig bestimmbar und der Versuch wuerde
-        # ohnehin scheitern.
-        #
-        # Live-Speicherueberwachung mit automatischem Neuversuch: die
-        # a-priori-Schaetzung (oben) ist bewusst grosszuegig, damit bei
-        # Netzen ohne grosse ebene/runde Bereiche (z. B. organische
-        # Scan-Daten) moeglichst viel Detail erhalten bleibt. Wird der
-        # Speicher waehrend des Aufbaus trotzdem zu knapp, bricht
-        # _build_solid_shared_topology SAUBER ab (_MemoryGuardAbort)
-        # statt abzustuerzen - hier wird dann automatisch mit staerkerer
-        # Vereinfachung neu versucht, bis zu 3 Mal.
-        memory_exhausted = False
-        shared_edges = None  # OCCT-Kantenobjekte (geteilte Topologie) - fuer Freiform-Glaettung
-        if mesh.is_watertight and mesh.is_winding_consistent:
-            for attempt in range(3):
-                report(
-                    15,
-                    f"Netz eingelesen ({faces_before:,} Dreiecke). Baue Volumenkoerper "
-                    "(schneller Pfad, ohne Vernaehen) ...",
+        if len(bodies) > 1:
+            report(15, f"{len(bodies)} getrennte Koerper im Netz erkannt - verarbeite jeden einzeln ...")
+            shapes = []
+            is_solid = True
+            detected_shapes = []
+            for i, body in enumerate(bodies):
+                def sub_report(pct, msg, i=i, n=len(bodies)):
+                    overall = 15 + int((pct / 100) * (70 / n)) + int(i * 70 / n)
+                    report(overall, f"Körper {i + 1}/{len(bodies)}: {msg}")
+
+                shape, body_solid, body_detected, mem_exhausted = _build_body_shape(
+                    body, settings, tol, sub_report, allow_memory_retry=False
                 )
-                try:
-                    fast_solid, fast_valid, fast_edges = _build_solid_shared_topology(
-                        mesh, progress_cb=report, pct_range=(15, 36)
+                if mem_exhausted:
+                    raise ConversionError(
+                        "Der verfuegbare Arbeitsspeicher reicht fuer einen der "
+                        f"{len(bodies)} getrennten Koerper nicht aus. Bitte andere "
+                        "Anwendungen schliessen oder die Einstellung \"Vereinfachung\" "
+                        "manuell reduzieren, und die Umwandlung erneut starten."
                     )
-                except _MemoryGuardAbort:
-                    fast_solid, fast_valid, fast_edges = None, False, None
-                    if attempt >= 2:
-                        memory_exhausted = True
-                        break
-                    target = max(MIN_USEFUL_FACES, int(len(mesh.faces) * 0.6))
+                shapes.append(shape)
+                is_solid = is_solid and body_solid
+                detected_shapes.extend(body_detected)
+
+            builder = TopoDS_Builder()
+            compound = TopoDS_Compound()
+            builder.MakeCompound(compound)
+            for s in shapes:
+                builder.Add(compound, s)
+            result_shape = compound
+        else:
+            is_solid = False
+            base_shape = None
+
+            # Schneller Pfad: Volumenkoerper direkt aus geteilter Topologie
+            # aufbauen (kein Sewing noetig, siehe _build_solid_shared_topology).
+            # Nur versuchen, wenn trimesh das Netz bereits als wasserdicht und
+            # wicklungskonsistent einstuft - sonst waere die Kantenrichtung
+            # pro Facette nicht eindeutig bestimmbar und der Versuch wuerde
+            # ohnehin scheitern.
+            #
+            # Live-Speicherueberwachung mit automatischem Neuversuch: die
+            # a-priori-Schaetzung (oben) ist bewusst grosszuegig, damit bei
+            # Netzen ohne grosse ebene/runde Bereiche (z. B. organische
+            # Scan-Daten) moeglichst viel Detail erhalten bleibt. Wird der
+            # Speicher waehrend des Aufbaus trotzdem zu knapp, bricht
+            # _build_solid_shared_topology SAUBER ab (_MemoryGuardAbort)
+            # statt abzustuerzen - hier wird dann automatisch mit staerkerer
+            # Vereinfachung neu versucht, bis zu 3 Mal.
+            memory_exhausted = False
+            shared_edges = None  # OCCT-Kantenobjekte (geteilte Topologie) - fuer Freiform-Glaettung
+            if mesh.is_watertight and mesh.is_winding_consistent:
+                for attempt in range(3):
                     report(
                         15,
-                        f"Arbeitsspeicher wurde waehrend des Aufbaus knapp - "
-                        f"vereinfache automatisch staerker auf ca. {target:,} "
-                        "Dreiecke und versuche es erneut ...",
+                        f"Netz eingelesen ({faces_before:,} Dreiecke). Baue Volumenkoerper "
+                        "(schneller Pfad, ohne Vernaehen) ...",
                     )
-                    mesh = mesh.simplify_quadric_decimation(face_count=target)
-                    mesh.export(preprocessed_path)
-                    faces_before = len(mesh.faces)
-                    continue
+                    try:
+                        fast_solid, fast_valid, fast_edges = _build_solid_shared_topology(
+                            mesh, progress_cb=report, pct_range=(15, 36)
+                        )
+                    except _MemoryGuardAbort:
+                        fast_solid, fast_valid, fast_edges = None, False, None
+                        if attempt >= 2:
+                            memory_exhausted = True
+                            break
+                        target = max(MIN_USEFUL_FACES, int(len(mesh.faces) * 0.6))
+                        report(
+                            15,
+                            f"Arbeitsspeicher wurde waehrend des Aufbaus knapp - "
+                            f"vereinfache automatisch staerker auf ca. {target:,} "
+                            "Dreiecke und versuche es erneut ...",
+                        )
+                        mesh = mesh.simplify_quadric_decimation(face_count=target)
+                        mesh.export(preprocessed_path)
+                        faces_before = len(mesh.faces)
+                        continue
 
-                if fast_valid:
-                    base_shape = fast_solid
-                    is_solid = True
-                    shared_edges = fast_edges
-                    report(38, "Volumenkoerper erfolgreich ohne Vernaehen aufgebaut.")
-                break
+                    if fast_valid:
+                        base_shape = fast_solid
+                        is_solid = True
+                        shared_edges = fast_edges
+                        report(38, "Volumenkoerper erfolgreich ohne Vernaehen aufgebaut.")
+                    break
 
-        if memory_exhausted:
-            # Der Speicher wurde auch nach mehrfacher automatischer
-            # Nachdezimierung waehrend des Aufbaus knapp. Der aeltere
-            # Sewing-Pfad braucht tendenziell EHER mehr als weniger
-            # Speicher fuer dieselbe Dreieckszahl - ein Versuch dort
-            # wuerde das Problem also eher verschaerfen als loesen.
-            # Deshalb hier sauber mit einer klaren Meldung abbrechen,
-            # statt einen aussichtslosen, riskanten Versuch zu starten.
-            raise ConversionError(
-                "Der verfuegbare Arbeitsspeicher reicht auch nach automatischer "
-                "Nachdezimierung nicht zuverlaessig aus. Bitte andere Anwendungen "
-                "schliessen, um Arbeitsspeicher freizugeben, oder die Einstellung "
-                "\"Vereinfachung\" manuell auf einen niedrigeren Wert stellen, und "
-                "die Umwandlung erneut starten."
-            )
+            if memory_exhausted:
+                # Der Speicher wurde auch nach mehrfacher automatischer
+                # Nachdezimierung waehrend des Aufbaus knapp. Der aeltere
+                # Sewing-Pfad braucht tendenziell EHER mehr als weniger
+                # Speicher fuer dieselbe Dreieckszahl - ein Versuch dort
+                # wuerde das Problem also eher verschaerfen als loesen.
+                # Deshalb hier sauber mit einer klaren Meldung abbrechen,
+                # statt einen aussichtslosen, riskanten Versuch zu starten.
+                raise ConversionError(
+                    "Der verfuegbare Arbeitsspeicher reicht auch nach automatischer "
+                    "Nachdezimierung nicht zuverlaessig aus. Bitte andere Anwendungen "
+                    "schliessen, um Arbeitsspeicher freizugeben, oder die Einstellung "
+                    "\"Vereinfachung\" manuell auf einen niedrigeren Wert stellen, und "
+                    "die Umwandlung erneut starten."
+                )
 
-        if base_shape is None:
-            # Sicherheitsnetz: der schnelle Pfad konnte keinen gueltigen
-            # Volumenkoerper liefern (oder das Netz ist nicht wasserdicht/
-            # wicklungskonsistent) - auf den bewaehrten, toleranzbasierten
-            # Sewing-Pfad zurueckfallen. Langsamer, aber robuster
-            # gegenueber unsauberen Netzen; garantiert, dass am Ende immer
-            # entweder ein echter Volumenkoerper oder eine ehrliche
-            # "nicht wasserdicht"-Meldung steht - nie unbearbeitete
-            # Rohdreiecke.
-            report(18, "Schneller Pfad nicht anwendbar - vernaehe Facetten (Sicherheitsnetz) ...")
-            shape = TopoDS_Shape()
-            reader = StlAPI_Reader()
-            if not reader.Read(shape, preprocessed_path):
-                raise ConversionError("STL-Datei konnte nicht gelesen werden.")
+            if base_shape is None:
+                # Sicherheitsnetz: der schnelle Pfad konnte keinen gueltigen
+                # Volumenkoerper liefern (oder das Netz ist nicht wasserdicht/
+                # wicklungskonsistent) - auf den bewaehrten, toleranzbasierten
+                # Sewing-Pfad zurueckfallen. Langsamer, aber robuster
+                # gegenueber unsauberen Netzen; garantiert, dass am Ende immer
+                # entweder ein echter Volumenkoerper oder eine ehrliche
+                # "nicht wasserdicht"-Meldung steht - nie unbearbeitete
+                # Rohdreiecke.
+                report(18, "Schneller Pfad nicht anwendbar - vernaehe Facetten (Sicherheitsnetz) ...")
+                shape = TopoDS_Shape()
+                reader = StlAPI_Reader()
+                if not reader.Read(shape, preprocessed_path):
+                    raise ConversionError("STL-Datei konnte nicht gelesen werden.")
 
-            sewing = BRepBuilderAPI_Sewing(tol)
-            sewing.Add(shape)
-            sewing.Perform()
-            sewed = sewing.SewedShape()
+                sewing = BRepBuilderAPI_Sewing(tol)
+                sewing.Add(shape)
+                sewing.Perform()
+                sewed = sewing.SewedShape()
 
-            report(28, "Suche geschlossene Huelle ...")
-            exp = TopExp_Explorer(sewed, TopAbs_SHELL)
-            shells = []
-            while exp.More():
-                shells.append(TopoDS.Shell(exp.Current()))
-                exp.Next()
+                report(28, "Suche geschlossene Huelle ...")
+                exp = TopExp_Explorer(sewed, TopAbs_SHELL)
+                shells = []
+                while exp.More():
+                    shells.append(TopoDS.Shell(exp.Current()))
+                    exp.Next()
 
-            base_shape = sewed
+                base_shape = sewed
 
-            if len(shells) == 1:
-                report(38, "Huelle geschlossen - erzeuge Volumenkoerper (ein Koerper) ...")
+                if len(shells) == 1:
+                    report(38, "Huelle geschlossen - erzeuge Volumenkoerper (ein Koerper) ...")
+                    try:
+                        maker = BRepBuilderAPI_MakeSolid(shells[0])
+                        if maker.IsDone():
+                            solid = maker.Solid()
+                            if BRepCheck_Analyzer(solid).IsValid():
+                                base_shape = solid
+                                is_solid = True
+                    except Exception:
+                        pass
+                else:
+                    report(
+                        38,
+                        f"Netz ist nicht wasserdicht ({len(shells)} Teil-Huellen) - "
+                        "Ergebnis wird als offene Flaeche gespeichert.",
+                    )
+
+            detected_shapes = []
+            result_shape = base_shape
+
+            run_detection = (settings.detect_curved_shapes or settings.smooth_scan_surfaces) and is_solid and len(mesh.faces) == faces_before
+            if run_detection:
+                report(50, "Suche volle Zylinder-/Kugelbereiche und/oder Scan-Rauschen (mehrere Kerne) ...")
                 try:
-                    maker = BRepBuilderAPI_MakeSolid(shells[0])
-                    if maker.IsDone():
-                        solid = maker.Solid()
-                        if BRepCheck_Analyzer(solid).IsValid():
-                            base_shape = solid
-                            is_solid = True
+                    replaced_solid, detected_shapes = _detect_and_replace_curves(
+                        base_shape,
+                        mesh,
+                        tol,
+                        settings.worker_count,
+                        smooth_freeform=settings.smooth_scan_surfaces,
+                        shared_edges=shared_edges,
+                    )
+                    if replaced_solid is not None:
+                        result_shape = replaced_solid
+                        n_replaced = sum(1 for d in detected_shapes if d.replaced)
+                        report(68, f"{n_replaced} Bereich(e) durch echte STEP-Flaechen ersetzt.")
                 except Exception:
-                    pass
-            else:
-                report(
-                    38,
-                    f"Netz ist nicht wasserdicht ({len(shells)} Teil-Huellen) - "
-                    "Ergebnis wird als offene Flaeche gespeichert.",
-                )
+                    traceback.print_exc()
+                    detected_shapes = []
 
-        detected_shapes = []
-        result_shape = base_shape
-
-        run_detection = (settings.detect_curved_shapes or settings.smooth_scan_surfaces) and is_solid and len(mesh.faces) == faces_before
-        if run_detection:
-            report(50, "Suche volle Zylinder-/Kugelbereiche und/oder Scan-Rauschen (mehrere Kerne) ...")
-            try:
-                replaced_solid, detected_shapes = _detect_and_replace_curves(
-                    base_shape,
-                    mesh,
-                    tol,
-                    settings.worker_count,
-                    smooth_freeform=settings.smooth_scan_surfaces,
-                    shared_edges=shared_edges,
-                )
-                if replaced_solid is not None:
-                    result_shape = replaced_solid
-                    n_replaced = sum(1 for d in detected_shapes if d.replaced)
-                    report(68, f"{n_replaced} Bereich(e) durch echte STEP-Flaechen ersetzt.")
-            except Exception:
-                traceback.print_exc()
-                detected_shapes = []
-
-        if settings.merge_planar:
-            report(78, "Fasse ebene Bereiche zu grossen Flaechen zusammen (Flaechenrueckfuehrung) ...")
-            unify = ShapeUpgrade_UnifySameDomain(result_shape, True, True, True)
-            unify.SetLinearTolerance(tol)
-            unify.SetAngularTolerance(1e-3)
-            unify.Build()
-            result_shape = unify.Shape()
+            if settings.merge_planar:
+                report(78, "Fasse ebene Bereiche zu grossen Flaechen zusammen (Flaechenrueckfuehrung) ...")
+                unify = ShapeUpgrade_UnifySameDomain(result_shape, True, True, True)
+                unify.SetLinearTolerance(tol)
+                unify.SetAngularTolerance(1e-3)
+                unify.Build()
+                result_shape = unify.Shape()
 
         faces_after = _count_faces(result_shape)
 

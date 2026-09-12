@@ -6,4 +6,4 @@ Bei jeder funktionalen Aenderung hochzaehlen (siehe CHANGELOG.md):
 - Major (N.0.0): grosse / brechende Aenderung
 """
 
-__version__ = "1.5.2"
+__version__ = "1.6.0"

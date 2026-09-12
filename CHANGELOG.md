@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.6.0 - Echte Mehrkoerper-Unterstuetzung (behebt hartnaeckiges "Loch"-Problem)
+- **Kernursache eines wiederholt gemeldeten "riesigen Lochs" gefunden
+  und behoben:** Enthaelt eine STL-Datei MEHRERE getrennte, jeweils
+  fuer sich wasserdichte Teile (z. B. ein Rahmen mit mehreren nicht
+  verbundenen Anbauteilen wie Propellern) stufte trimesh das
+  GESAMTNETZ zwar korrekt als "wasserdicht" ein - der Volumenkoerper-
+  Aufbau erwartete aber bisher genau EINE zusammenhaengende Huelle
+  fuer das ganze Netz und hat einen solchen Mehrkoerper-Fall
+  faelschlich als "nicht wasserdicht (mehrere Teil-Huellen)"
+  verworfen, obwohl jeder einzelne Teil fuer sich ein voelig gueltiger
+  Koerper gewesen waere.
+- **Fix:** Getrennte Koerper werden jetzt zu Beginn erkannt (ueber
+  trimesh's Zusammenhangskomponenten-Analyse) und JEDER EINZELN durch
+  die komplette Pipeline geschickt (schneller Aufbau, Zylinder-/Kugel-
+  Erkennung, Scan-Glaettung, Flaechenrueckfuehrung) - anschliessend
+  werden alle Ergebnisse zu einem gemeinsamen STEP-Compound
+  zusammengefuegt. Jeder Koerper wird dabei separat erkannt und
+  gemeldet (z. B. zwei einzelne Kugeln mit unterschiedlichem Radius
+  in einer Datei).
+- Eigener Test: eine Datei mit zwei getrennten, unterschiedlich
+  grossen Kugeln wurde korrekt in einen gueltigen Volumenkoerper mit
+  zwei einzelnen, analytisch exakten Kugelflaechen umgewandelt -
+  Volumen exakt (Summe beider Kugelvolumina), unabhaengig
+  nachgeprueft.
+
 ## 1.5.2 - Versionsnummer wieder im GitHub-Actions-Build sichtbar
 - Der Build-Workflow liest jetzt zu Beginn die Versionsnummer aus
   `version.py` aus und verwendet sie im PyInstaller-Programmnamen
