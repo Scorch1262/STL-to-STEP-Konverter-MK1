@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1 - Fix: Build-Fehler durch falsche pymeshfix-Versionsangabe
+- **Build-Fix:** `requirements.txt` verlangte faelschlich
+  `pymeshfix>=1.0` - diese Bibliothek hat aber nie eine 1.x-Version
+  veroeffentlicht (aktuell: 0.18.x), wodurch die GitHub-Actions-Builds
+  fehlschlugen ("No matching distribution found"). Korrigiert auf
+  `pymeshfix>=0.16`.
+
 ## 1.5.0 - Automatische Lochreparatur fuer echte Scan-Luecken
 - **Wichtige Klarstellung zu einem oft gemeldeten "Loch"-Problem:**
   Nicht jedes gemeldete Loch war ein Fehler in der Umwandlung selbst -
