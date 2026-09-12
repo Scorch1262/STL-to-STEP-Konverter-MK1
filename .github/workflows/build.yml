@@ -34,6 +34,7 @@ jobs:
           --collect-all pyransac3d
           --collect-all scipy
           --collect-all psutil
+          --collect-all pymeshfix
           --add-data "templates;templates"
           --add-data "static;static"
           app.py
@@ -72,6 +73,7 @@ jobs:
           --collect-all pyransac3d
           --collect-all scipy
           --collect-all psutil
+          --collect-all pymeshfix
           --add-data "templates:templates"
           --add-data "static:static"
           app.py

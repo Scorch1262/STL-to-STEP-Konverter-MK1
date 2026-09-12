@@ -106,6 +106,11 @@ try:
 except Exception:  # pragma: no cover - Speicher-Schaetzung ist optional
     psutil = None
 
+try:
+    import pymeshfix
+except Exception:  # pragma: no cover - Lochreparatur ist optional
+    pymeshfix = None
+
 ProgressCallback = Callable[[int, str], None]
 
 # Sehr grosse Netze: die (Python-seitige) Regionen-Analyse pro Facette
@@ -911,6 +916,33 @@ def _preprocess_mesh(input_path: str, settings: ConversionSettings, tmp_path: st
         target = max(4, int(len(mesh.faces) * settings.decimate_percent / 100))
         report(9, f"{prefix}: Vereinfachung auf {settings.decimate_percent}% ({target} Dreiecke) ...")
         mesh = mesh.simplify_quadric_decimation(face_count=target)
+
+    # Automatische Lochreparatur: viele reale 3D-Scans (z. B. komplexe
+    # Baugruppen mit duennen/ueberlappenden Teilen) sind NICHT
+    # wasserdicht - die Aufnahme selbst hat echte Luecken. Ohne
+    # Reparatur bleibt das Ergebnis ehrlich eine offene Flaeche statt
+    # eines Volumenkoerpers. trimesh.repair.fill_holes schafft nur
+    # einfache Loecher zuverlaessig; pymeshfix (eigenstaendige, auf
+    # Wasserdichtigkeit spezialisierte Bibliothek) schliesst auch
+    # komplexere, unregelmaessige Luecken. Nur versuchen, wenn das Netz
+    # tatsaechlich nicht wasserdicht ist (kostet sonst unnoetig Zeit).
+    if pymeshfix is not None and not mesh.is_watertight and len(mesh.faces) <= MAX_FACES_FOR_NORMAL_REPAIR:
+        report(10, f"{prefix}: Netz ist nicht wasserdicht - versuche Löcher zu schließen ...")
+        try:
+            fixer = pymeshfix.MeshFix(mesh.vertices, mesh.faces)
+            fixer.repair()
+            repaired = trimesh.Trimesh(vertices=fixer.points, faces=fixer.faces, process=True)
+            if len(repaired.faces) > 0:
+                mesh = repaired
+            if mesh.is_watertight:
+                report(10, f"{prefix}: Löcher erfolgreich geschlossen - Netz ist jetzt wasserdicht.")
+            else:
+                report(10, f"{prefix}: Löcher konnten nicht vollständig geschlossen werden.")
+        except Exception:
+            traceback.print_exc()
+            # Reparatur fehlgeschlagen - mit dem urspruenglichen (nicht
+            # wasserdichten) Netz weitermachen; das Ergebnis wird dann
+            # ehrlich als offene Flaeche ausgegeben statt abzustuerzen.
 
     # Normalen-/Wicklungs-Reparatur: fuer den schnellen Volumenkoerper-
     # Aufbau (geteilte Topologie, siehe unten) wird eine konsistente

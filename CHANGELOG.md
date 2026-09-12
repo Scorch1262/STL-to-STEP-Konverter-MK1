@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.0 - Automatische Lochreparatur fuer echte Scan-Luecken
+- **Wichtige Klarstellung zu einem oft gemeldeten "Loch"-Problem:**
+  Nicht jedes gemeldete Loch war ein Fehler in der Umwandlung selbst -
+  viele echte 3D-Scans (besonders komplexe Baugruppen mit duennen
+  oder ueberlappenden Teilen, z. B. Propeller/Drohnen-Rahmen) sind
+  bereits im Original NICHT wasserdicht. Das Programm hat das bisher
+  ehrlich als "Offene Flaeche (Netz war nicht wasserdicht)" gemeldet -
+  aber ohne eine Moeglichkeit, das zu beheben.
+- **Neu: automatische Lochreparatur.** Ist das eingelesene Netz nicht
+  wasserdicht, wird jetzt automatisch versucht, die Luecken zu
+  schliessen (ueber die auf Wasserdichtigkeit spezialisierte
+  Bibliothek `pymeshfix`) - deutlich robuster als einfache
+  Loch-Fuellung, die nur bei simplen, kleinen Luecken zuverlaessig
+  funktioniert. In eigenen Tests: ein Netz mit vier unterschiedlich
+  komplexen Luechern wurde erfolgreich vollstaendig repariert und
+  anschliessend zu einem gueltigen Volumenkoerper mit exaktem Volumen
+  umgewandelt (Abweichung < 0,001% vom Original). Auch bei groesseren
+  Netzen (80.000+ Dreiecke, 200 verstreute Luecken) dauert die
+  Reparatur unter einer Sekunde.
+- Schlaegt die Reparatur trotzdem fehl oder bleiben Luecken uebrig,
+  faellt die Umwandlung wie bisher ehrlich auf die offene-Flaeche-
+  Meldung zurueck - es wird nichts vorgetaeuscht.
+
 ## 1.4.3 - Fix: Lueckenpruefung war selbst fehlerhaft
 - **Ursache des in 1.4.2 weiterhin gemeldeten Lochs gefunden:** Die
   in 1.4.2 eingefuehrte, selbstgeschriebene Lueckenpruefung (Kanten

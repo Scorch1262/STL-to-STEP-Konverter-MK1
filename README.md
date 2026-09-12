@@ -7,6 +7,10 @@ dabei zu einem einzigen Volumenkörper zusammengefasst.
 ## Funktionsweise (kurz)
 
 1. STL-Netz einlesen (optional vorher glätten/vereinfachen, siehe Einstellungen).
+   Ist das Netz nicht wasserdicht (echte Lücken - bei komplexen realen
+   3D-Scans nicht selten, z. B. bei dünnen/überlappenden Teilen),
+   wird automatisch versucht, diese Lücken zu schließen (siehe
+   "Automatische Lochreparatur" unten), bevor es weitergeht.
 2. Alle Dreiecksflächen zu einer Hülle vernähen (Sewing).
 3. Ist die Hülle geschlossen: einen Volumenkörper daraus bauen
    (ein Körper, kein loses Flächenhaufen).
@@ -99,6 +103,22 @@ bisherigen, langsameren aber toleranteren Sewing-Pfad zurück. Am Ende
 steht dadurch **immer** entweder ein echter, geprüft gültiger
 Volumenkörper oder eine ehrliche „Netz nicht wasserdicht"-Meldung -
 nie werden unbearbeitete Rohdreiecke als Ergebnis ausgeliefert.
+
+## Automatische Lochreparatur
+
+Viele reale 3D-Scans (besonders komplexe Baugruppen mit dünnen oder
+sich überlappenden Teilen, z. B. Propeller, Gitter, Drohnen-Rahmen)
+sind bereits in der Rohdatei **nicht wasserdicht** - die Aufnahme
+selbst hat echte Lücken. Ist das der Fall, versucht das Programm
+automatisch, diese Lücken zu schließen, bevor der Volumenkörper-Aufbau
+beginnt: über die auf Wasserdichtigkeit spezialisierte Bibliothek
+`pymeshfix` (deutlich robuster bei unregelmäßigen/komplexen Lücken als
+einfaches Loch-Füllen, das nur bei kleinen, einfachen Löchern
+zuverlässig funktioniert). Gelingt das, läuft die Umwandlung normal
+weiter (inklusive schnellem Pfad und Flächenrückführung); gelingt es
+nicht vollständig, fällt die Umwandlung wie gehabt ehrlich auf die
+„Netz nicht wasserdicht"-Meldung zurück - es wird nie ein falscher
+Volumenkörper vorgetäuscht.
 
 **Verbleibende, ehrliche Grenze - Arbeitsspeicher, nicht nur Zeit:**
 Der Flächen-Aufbau läuft als Python-Schleife über jede Facette (mehrere

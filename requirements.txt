@@ -5,4 +5,5 @@ scipy>=1.10
 pyransac3d>=0.6
 fast-simplification>=0.1
 psutil>=5.9
+pymeshfix>=1.0
 pyinstaller>=6.10
