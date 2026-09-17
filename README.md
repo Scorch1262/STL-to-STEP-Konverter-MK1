@@ -1,5 +1,7 @@
 # STL-STEP-Konverter-MK1
 
+![Bild](Bilder.png)
+
 Lokale Webanwendung, die eine `.stl`-Datei per Flächenrückführung in
 eine `.stp`-Datei (STEP) umwandelt. Das komplette Dreiecksnetz wird
 dabei zu einem einzigen Volumenkörper zusammengefasst.
