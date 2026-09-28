@@ -23,24 +23,70 @@ STRG+C) wieder beenden kann.
 
 from __future__ import annotations
 
-import json
 import multiprocessing
 import os
-import queue as queue_module
 import sys
-import tempfile
-import threading
-import time
-import uuid
-import webbrowser
-
-from flask import Flask, Response, jsonify, render_template, request, send_file
-
-from converter import ConversionError, ConversionSettings, convert_stl_to_step
-from version import __version__
+import traceback
 
 APP_NAME = "STL-STEP-Konverter-MK1"
 HEARTBEAT_SECONDS = 8
+
+
+def _fatal_startup_error(context: str) -> None:
+    """Zeigt einen aufgetretenen Fehler vollstaendig an und haelt das
+    Fenster anschliessend offen.
+
+    Hintergrund: Unter Windows schliesst sich das von PyInstaller
+    geoeffnete Konsolenfenster automatisch und SOFORT, sobald sich das
+    Programm beendet - auch bei einem Absturz durch eine unbehandelte
+    Ausnahme. Ohne diese Absicherung sieht man als Nutzer also nur ein
+    kurz aufblitzendes und wieder verschwindendes schwarzes Fenster,
+    aber nie die eigentliche Fehlermeldung. Diese Funktion faengt
+    genau solche Startfehler ab (z. B. eine fehlende DLL fuer die
+    OpenCASCADE-Anbindung 'OCP', typischerweise weil auf dem Windows-
+    Rechner das "Microsoft Visual C++ Redistributable" fehlt), zeigt
+    den vollstaendigen Fehler an und wartet auf eine Eingabe, bevor
+    sich das Fenster schliesst."""
+    print("\n" + "=" * 70)
+    print(f"FEHLER: {context}")
+    print("=" * 70)
+    traceback.print_exc()
+    print("=" * 70)
+    print(
+        "\nHinweis: Falls hier ein Fehler rund um 'OCP', 'DLL load failed'\n"
+        "oder eine aehnliche Bibliothek steht, fehlt unter Windows meist\n"
+        "das kostenlose 'Microsoft Visual C++ Redistributable (x64)'.\n"
+        "Dieses laesst sich direkt bei Microsoft herunterladen und\n"
+        "installieren, danach das Programm erneut starten."
+    )
+    try:
+        input("\nDruecken Sie die Eingabetaste, um dieses Fenster zu schliessen ...")
+    except Exception:
+        pass
+
+
+try:
+    import json
+    import queue as queue_module
+    import tempfile
+    import threading
+    import time
+    import uuid
+    import webbrowser
+
+    from flask import Flask, Response, jsonify, render_template, request, send_file
+
+    from converter import ConversionError, ConversionSettings, convert_stl_to_step
+    from version import __version__
+except BaseException:
+    # Passiert dieser Fehler, ist noch gar kein Programmteil (Server,
+    # multiprocessing, ...) aktiv - daher hier sofort abfangen und
+    # anzeigen, statt das Fenster kommentarlos verschwinden zu lassen.
+    _fatal_startup_error(
+        "Eine benoetigte Programmbibliothek konnte nicht geladen werden. "
+        "Das Programm konnte deshalb nicht gestartet werden."
+    )
+    sys.exit(1)
 
 
 def resource_path(relative_path: str) -> str:
@@ -372,4 +418,14 @@ if __name__ == "__main__":
     # vorne starten). Muss die allererste Anweisung im Einstiegspunkt
     # sein.
     multiprocessing.freeze_support()
-    main()
+    try:
+        main()
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException:
+        # Sicherheitsnetz fuer alle Startfehler NACH dem Bibliotheks-
+        # Import (z. B. Port bereits belegt) - siehe _fatal_startup_error
+        # oben fuer die Begruendung, warum dieses Abfangen unter Windows
+        # notwendig ist.
+        _fatal_startup_error("Das Programm wurde unerwartet beendet.")
+        sys.exit(1)

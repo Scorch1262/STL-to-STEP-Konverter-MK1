@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.6.1 - Windows-Absturz beim Start behoben (Fehler wird jetzt sichtbar)
+- **Problem:** Unter Windows stuerzte die gebaute .exe direkt nach dem
+  Start ab, und das Konsolenfenster verschwand sofort wieder - ohne
+  dass eine Fehlermeldung zu sehen war.
+- **Ursache:** `app.py` hat beim Start einige (teils schwere)
+  Bibliotheken ohne jede Absicherung importiert, allen voran
+  `converter.py` mit seiner OpenCASCADE-Anbindung `OCP` sowie
+  `pymeshfix`. Schlaegt so ein Import fehl (z. B. weil auf dem
+  Windows-Rechner eine benoetigte DLL fehlt, typischerweise das
+  "Microsoft Visual C++ Redistributable"), wirft Python sofort eine
+  unbehandelte Ausnahme. Windows schliesst das von PyInstaller
+  geoeffnete Konsolenfenster aber automatisch, sobald sich der Prozess
+  beendet - auch wenn er wegen eines Fehlers abstuerzt. Ergebnis: ein
+  kurz aufblitzendes, sofort wieder verschwindendes schwarzes Fenster,
+  ganz ohne lesbare Fehlermeldung.
+- **Fix:** Der komplette Startvorgang (sowohl der Bibliotheks-Import
+  als auch der eigentliche Serverstart in `main()`) ist jetzt in ein
+  Sicherheitsnetz eingebettet. Tritt ein Fehler auf, wird er
+  vollstaendig ausgegeben (inklusive Hinweis auf das moeglicherweise
+  fehlende Visual-C++-Redistributable bei DLL-Fehlern) und das Fenster
+  wartet anschliessend auf eine Eingabetaste, bevor es sich schliesst -
+  so bleibt die eigentliche Ursache erstmals sichtbar. Ein normales
+  Beenden per Fenster schliessen/STRG+C (KeyboardInterrupt) ist davon
+  ausdruecklich ausgenommen und funktioniert weiterhin ohne diese
+  zusaetzliche Meldung.
+- **Hinweis:** Da mir kein Windows-Testrechner zur Verfuegung steht,
+  konnte dieser Fix nicht auf einer echten Windows-Maschine
+  nachgestellt werden. Sollte die .exe nach diesem Update weiterhin
+  abstuerzen, zeigt das Konsolenfenster jetzt aber in jedem Fall den
+  echten Grund an - dieser Text hilft dann bei der gezielten
+  Fehlersuche.
+
 ## 1.6.0 - Echte Mehrkoerper-Unterstuetzung (behebt hartnaeckiges "Loch"-Problem)
 - **Kernursache eines wiederholt gemeldeten "riesigen Lochs" gefunden
   und behoben:** Enthaelt eine STL-Datei MEHRERE getrennte, jeweils
