@@ -6,6 +6,11 @@ Lokale Webanwendung, die eine `.stl`-Datei per Flächenrückführung in
 eine `.stp`-Datei (STEP) umwandelt. Das komplette Dreiecksnetz wird
 dabei zu einem einzigen Volumenkörper zusammengefasst.
 
+Alternativ steht auf der Weboberfläche auch ein zweiter, deutlich
+leichtgewichtigerer Modus zur Verfügung, der nur die Anzahl der
+Dreiecke reduziert und wieder eine `.stl`-Datei liefert - ganz ohne
+CAD-Umwandlung (siehe "Modus: Nur Dreiecke reduzieren (STL)" unten).
+
 ## Funktionsweise (kurz)
 
 1. STL-Netz einlesen (optional vorher glätten/vereinfachen, siehe Einstellungen).
@@ -60,13 +65,36 @@ eingelesen und mit der vollen, strengen Prüfung gegenkontrolliert.
 - **Glättung** (0–10): Taubin-Glättung vor der Umwandlung, entfernt
   Netzrauschen ohne das Modell sichtbar zu schrumpfen.
 - **Vereinfachung**: Ziel-Dreieckszahl in % der ursprünglichen Anzahl.
-- **Ebene Flächen zusammenführen**: an/aus.
-- **Zylinder/Kugeln automatisch ersetzen**: an/aus.
-- **Scan-Oberfläche glätten**: an/aus. Wandelt unebene, verrauschte
-  Freiformbereiche im Inneren in eine echte glatte Fläche ohne
-  Facetten um (technischer Hintergrund: `BRepOffsetAPI_MakeFilling`
-  baut die Fläche direkt aus den vorhandenen, geteilten Randkanten
-  auf - dadurch ist keine riskante grosse Naht-Toleranz nötig).
+- **Ebene Flächen zusammenführen**: an/aus. (nur im STEP-Modus)
+- **Zylinder/Kugeln automatisch ersetzen**: an/aus. (nur im STEP-Modus)
+- **Scan-Oberfläche glätten**: an/aus. (nur im STEP-Modus) Wandelt
+  unebene, verrauschte Freiformbereiche im Inneren in eine echte
+  glatte Fläche ohne Facetten um (technischer Hintergrund:
+  `BRepOffsetAPI_MakeFilling` baut die Fläche direkt aus den
+  vorhandenen, geteilten Randkanten auf - dadurch ist keine riskante
+  grosse Naht-Toleranz nötig).
+
+## Modus: Nur Dreiecke reduzieren (STL)
+
+Oben auf der Weboberfläche lässt sich zwischen zwei Modi umschalten:
+
+- **In STEP umwandeln** (Standard): die volle Flächenrückführung wie
+  oben beschrieben, Ergebnis ist eine `.stp`-Datei.
+- **Nur Dreiecke reduzieren (STL)**: reduziert die Dreieckszahl (und
+  glättet optional per Taubin-Filter), liefert aber wieder eine ganz
+  normale `.stl`-Datei zurück - **ohne** jede Umwandlung in einen
+  CAD-Volumenkörper. Nur die Einstellungen "Glättung" und
+  "Vereinfachung" sind in diesem Modus relevant; die STEP-spezifischen
+  Einstellungen (ebene Flächen zusammenführen, Zylinder/Kugeln
+  ersetzen, Scan-Glättung) werden ausgeblendet, da sie hier keine
+  Wirkung hätten.
+
+  Dieser Modus kommt komplett ohne OpenCASCADE aus (nur `trimesh`) und
+  ist dadurch deutlich schneller und speicherschonender als die volle
+  STEP-Umwandlung. Sinnvoll z. B., um eine sehr große Scan-Datei erst
+  einmal zu verkleinern, bevor sie in einem Slicer oder einer anderen
+  Anwendung weiterverwendet wird - ganz ohne dass überhaupt eine
+  STEP-Datei benötigt wird.
 
 ## Performance bei großen Netzen
 

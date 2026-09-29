@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.7.0 - Neuer Modus: Nur Dreiecke reduzieren (STL, ohne STEP-Umwandlung)
+- **Neue Funktion:** Auf der Weboberfläche lässt sich jetzt oben
+  zwischen zwei Modi umschalten:
+  - "In STEP umwandeln" (bisheriges Verhalten, unverändert).
+  - "Nur Dreiecke reduzieren (STL)": reduziert nur die Dreieckszahl
+    (und glättet optional), liefert aber wieder eine ganz normale
+    `.stl`-Datei zurück - komplett ohne Umwandlung in einen CAD-
+    Volumenkörper.
+- **Warum:** Bisher war die einzige Möglichkeit, ein STL-Netz zu
+  reduzieren, der Umweg über die volle (langsamere, speicher-
+  hungrigere) STEP-Umwandlung inklusive OpenCASCADE. Für Fälle, in
+  denen am Ende gar keine STEP-Datei gebraucht wird - z. B. um eine
+  große Scan-Datei vor der Weiterverwendung in einem Slicer oder einer
+  anderen Anwendung zu verkleinern - war das unnötig aufwendig.
+- **Umsetzung:**
+  - `converter.py`: neue eigenständige Funktion `simplify_stl_to_stl()`
+    (mit eigenem, schlankem `SimplifyResult`) - lädt das Netz per
+    trimesh, glättet/dezimiert optional und schreibt direkt wieder ein
+    STL. Kommt komplett ohne OpenCASCADE aus.
+  - `app.py`: Upload-Route erkennt jetzt ein `mode`-Feld
+    ("step"/"simplify") und startet je nachdem den bisherigen oder
+    einen neuen, gleichermaßen in einem eigenen Prozess laufenden
+    Vereinfachungs-Worker; Download liefert im neuen Modus eine
+    `.stl`- statt `.stp`-Datei.
+  - Weboberfläche: neue Umschalt-Leiste "In STEP umwandeln" /
+    "Nur Dreiecke reduzieren (STL)" oberhalb der Dropzone. Im
+    Vereinfachungs-Modus werden die STEP-spezifischen Einstellungen
+    (ebene Flächen zusammenführen, Zylinder/Kugeln ersetzen,
+    Scan-Glättung) automatisch ausgeblendet, da sie dort keine Wirkung
+    hätten. Die "Nachher"-Vorschau zeigt in diesem Modus bewusst
+    weiterhin flach schattierte Facetten (ehrliche Dreicksansicht),
+    da ja kein glatter STEP-Volumenkörper entsteht.
+- README ergänzt (neuer Abschnitt "Modus: Nur Dreiecke reduzieren
+  (STL)").
+
 ## 1.6.1 - Windows-Absturz beim Start behoben (Fehler wird jetzt sichtbar)
 - **Problem:** Unter Windows stuerzte die gebaute .exe direkt nach dem
   Start ab, und das Konsolenfenster verschwand sofort wieder - ohne

@@ -232,6 +232,18 @@ class ConversionResult:
     detected_shapes: list = field(default_factory=list)
 
 
+@dataclass
+class SimplifyResult:
+    """Ergebnis einer reinen Netz-Vereinfachung (siehe simplify_stl_to_stl) -
+    bewusst schlanker als ConversionResult, da hier kein CAD-
+    Volumenkoerper entsteht, sondern nur ein reduziertes STL."""
+    output_path: str
+    face_count_before: int
+    face_count_after: int
+    vertex_count_before: int
+    vertex_count_after: int
+
+
 class ConversionError(Exception):
     pass
 
@@ -1550,3 +1562,65 @@ def convert_stl_to_step(
     except Exception as exc:
         traceback.print_exc()
         raise ConversionError(f"Unerwarteter Fehler bei der Umwandlung: {exc}") from exc
+
+
+# --------------------------------------------------------------------------
+# Reine Netz-Vereinfachung (STL -> STL, ohne CAD-Umwandlung)
+# --------------------------------------------------------------------------
+
+def simplify_stl_to_stl(
+    input_path: str,
+    output_path: str,
+    settings: Optional[ConversionSettings] = None,
+    progress_cb: Optional[ProgressCallback] = None,
+) -> SimplifyResult:
+    """Reduziert (Dezimierung) und optional glaettet ein STL-Netz und
+    schreibt das Ergebnis wieder als STL - ganz OHNE die Umwandlung in
+    einen CAD-Volumenkoerper (STEP). Kommt komplett ohne OpenCASCADE
+    aus (nur trimesh), ist deshalb deutlich schneller und
+    speicherschonender als convert_stl_to_step und eignet sich fuer
+    Faelle, in denen nur die Dreieckszahl einer STL-Datei reduziert
+    werden soll (z. B. um sie anschliessend in einem Slicer oder einer
+    anderen Anwendung weiterzuverwenden), ohne dass ueberhaupt eine
+    STEP-Datei benoetigt wird."""
+    settings = settings or ConversionSettings()
+
+    def report(pct: int, msg: str) -> None:
+        if progress_cb:
+            progress_cb(pct, msg)
+
+    try:
+        report(5, "Lese Netz ein ...")
+        mesh = trimesh.load(input_path, force="mesh")
+        faces_before = len(mesh.faces)
+        vertices_before = len(mesh.vertices)
+        if faces_before == 0:
+            raise ConversionError("Die STL-Datei enthaelt keine Dreiecke.")
+
+        if settings.smoothing_iterations > 0:
+            report(25, f"Glättung ({settings.smoothing_iterations}x) ...")
+            trimesh.smoothing.filter_taubin(mesh, iterations=settings.smoothing_iterations)
+
+        if settings.decimate_percent < 100:
+            target = max(4, int(faces_before * settings.decimate_percent / 100))
+            report(55, f"Vereinfachung auf {settings.decimate_percent}% ({target:,} Dreiecke) ...")
+            mesh = mesh.simplify_quadric_decimation(face_count=target)
+        else:
+            report(55, "Vereinfachung auf 100% eingestellt - Netz bleibt unveraendert.")
+
+        report(90, "Schreibe reduzierte STL-Datei ...")
+        mesh.export(output_path)
+
+        report(100, "Fertig.")
+        return SimplifyResult(
+            output_path=output_path,
+            face_count_before=faces_before,
+            face_count_after=len(mesh.faces),
+            vertex_count_before=vertices_before,
+            vertex_count_after=len(mesh.vertices),
+        )
+    except ConversionError:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise ConversionError(f"Unerwarteter Fehler bei der Vereinfachung: {exc}") from exc

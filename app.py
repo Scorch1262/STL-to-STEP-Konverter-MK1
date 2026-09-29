@@ -76,7 +76,7 @@ try:
 
     from flask import Flask, Response, jsonify, render_template, request, send_file
 
-    from converter import ConversionError, ConversionSettings, convert_stl_to_step
+    from converter import ConversionError, ConversionSettings, convert_stl_to_step, simplify_stl_to_stl
     from version import __version__
 except BaseException:
     # Passiert dieser Fehler, ist noch gar kein Programmteil (Server,
@@ -124,6 +124,7 @@ def _job_public_state(job: dict) -> dict:
         "status": job["status"],
         "progress": job["progress"],
         "message": job["message"],
+        "mode": job.get("mode", "step"),
     }
     if job["status"] == "done":
         payload.update(
@@ -196,14 +197,68 @@ def _conversion_worker_process(
         progress_queue.put(("error", f"Unerwarteter Fehler: {exc}"))
 
 
-def _run_conversion(job_id: str, input_path: str, output_path: str, preview_path: str, settings: ConversionSettings) -> None:
+def _simplify_worker_process(
+    input_path: str,
+    output_path: str,
+    preview_path: str,
+    settings: ConversionSettings,
+    progress_queue: "multiprocessing.Queue",
+) -> None:
+    """Wie _conversion_worker_process, aber fuer den leichtgewichtigen
+    Modus "nur Dreiecke reduzieren": ruft simplify_stl_to_stl statt
+    convert_stl_to_step auf, kommt also komplett ohne OpenCASCADE aus.
+    Laeuft trotzdem in einem eigenen Prozess (statt nur einem Thread),
+    damit auch sehr grosse Netze den Hauptprozess (Webserver) niemals
+    belasten oder mit ihm um Arbeitsspeicher konkurrieren.
+
+    'preview_path' wird hier nicht separat erzeugt: die reduzierte STL-
+    Datei IST bereits die Vorschau fuer die "Nachher"-Ansicht, output_path
+    und preview_path zeigen deshalb bewusst auf dieselbe Datei (siehe
+    upload()).
+    """
+
+    def progress_cb(pct: int, message: str) -> None:
+        try:
+            progress_queue.put(("progress", pct, message))
+        except Exception:
+            pass
+
+    try:
+        result = simplify_stl_to_stl(input_path, output_path, settings=settings, progress_cb=progress_cb)
+        progress_queue.put((
+            "done",
+            {
+                "is_solid": None,
+                "face_count_before": result.face_count_before,
+                "face_count_after": result.face_count_after,
+                "volume": None,
+                "preview_path": output_path,
+                "detected_shapes": [],
+            },
+        ))
+    except ConversionError as exc:
+        progress_queue.put(("error", str(exc)))
+    except Exception as exc:  # Sicherheitsnetz, damit der Prozess nie "stumm" stirbt
+        progress_queue.put(("error", f"Unerwarteter Fehler: {exc}"))
+
+
+def _run_conversion(
+    job_id: str,
+    input_path: str,
+    output_path: str,
+    preview_path: str,
+    settings: ConversionSettings,
+    mode: str = "step",
+) -> None:
     """Leichter Aufseher-Thread im Hauptprozess: startet die eigentliche
     Umwandlung als eigenen Prozess und reicht dessen Fortschritts-
     meldungen an JOBS weiter. Haelt selbst keine grossen Datenmengen im
-    Speicher."""
+    Speicher. Je nach 'mode' wird entweder die volle STEP-Umwandlung
+    oder die leichtgewichtige reine Netz-Vereinfachung gestartet."""
     progress_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+    worker = _simplify_worker_process if mode == "simplify" else _conversion_worker_process
     process = multiprocessing.Process(
-        target=_conversion_worker_process,
+        target=worker,
         args=(input_path, output_path, preview_path, settings, progress_queue),
     )
     process.start()
@@ -279,10 +334,21 @@ def upload():
 
     settings = ConversionSettings.from_form(request.form)
 
+    mode = request.form.get("mode", "step")
+    if mode not in ("step", "simplify"):
+        mode = "step"
+
     job_id = uuid.uuid4().hex
     input_path = os.path.join(WORK_DIR, f"{job_id}_input.stl")
-    output_path = os.path.join(WORK_DIR, f"{job_id}_output.stp")
-    preview_path = os.path.join(WORK_DIR, f"{job_id}_preview.stl")
+    if mode == "simplify":
+        # Reiner Vereinfachungs-Modus: das Ergebnis ist selbst wieder
+        # eine STL-Datei, die zugleich als "Nachher"-Vorschau dient -
+        # eine separate Vorschau-Datei wird hier nicht benoetigt.
+        output_path = os.path.join(WORK_DIR, f"{job_id}_output.stl")
+        preview_path = output_path
+    else:
+        output_path = os.path.join(WORK_DIR, f"{job_id}_output.stp")
+        preview_path = os.path.join(WORK_DIR, f"{job_id}_preview.stl")
     file.save(input_path)
 
     with JOBS_LOCK:
@@ -290,6 +356,7 @@ def upload():
             "status": "running",
             "progress": 0,
             "message": "Warteschlange ...",
+            "mode": mode,
             "output_path": output_path,
             "input_path": input_path,
             "preview_path": preview_path,
@@ -298,7 +365,7 @@ def upload():
 
     thread = threading.Thread(
         target=_run_conversion,
-        args=(job_id, input_path, output_path, preview_path, settings),
+        args=(job_id, input_path, output_path, preview_path, settings, mode),
         daemon=True,
     )
     thread.start()
@@ -365,7 +432,11 @@ def download(job_id: str):
     if job is None or job["status"] != "done":
         return jsonify({"error": "Datei ist noch nicht bereit."}), 404
 
-    download_name = f"{job.get('original_name', 'modell')}.stp"
+    original_name = job.get("original_name", "modell")
+    if job.get("mode") == "simplify":
+        download_name = f"{original_name}_reduziert.stl"
+    else:
+        download_name = f"{original_name}.stp"
     return send_file(job["output_path"], as_attachment=True, download_name=download_name)
 
 

@@ -31,6 +31,59 @@ const mergePlanar = document.getElementById("mergePlanar");
 const detectShapes = document.getElementById("detectShapes");
 const smoothScan = document.getElementById("smoothScan");
 
+const modeStepBtn = document.getElementById("modeStepBtn");
+const modeSimplifyBtn = document.getElementById("modeSimplifyBtn");
+const modeSubtitle = document.getElementById("modeSubtitle");
+const stepOnlySettings = document.getElementById("stepOnlySettings");
+const simplifyOnlyHint = document.getElementById("simplifyOnlyHint");
+const resultFacesLabel = document.getElementById("resultFacesLabel");
+
+const MODE_TEXT = {
+  step: {
+    subtitle:
+      "Wandelt ein STL-Dreiecksnetz vollständig in einen einzelnen " +
+      "Volumenkörper (.stp) um. Ebene Bereiche werden dabei zu " +
+      "durchgehenden Flächen zusammengeführt, gekrümmte Bereiche " +
+      "(Zylinder/Kugeln) werden erkannt und angezeigt.",
+    button: "Umwandlung starten",
+    downloadLabel: "STP-Datei herunterladen",
+    tabAfter: "Nachher (STEP-Ergebnis)",
+    facesLabel: "Flächen vorher / nachher",
+  },
+  simplify: {
+    subtitle:
+      "Reduziert nur die Anzahl der Dreiecke einer STL-Datei (optional " +
+      "mit Glättung) und liefert wieder eine .stl Datei - ganz ohne " +
+      "Umwandlung in ein CAD-Volumenmodell.",
+    button: "Vereinfachung starten",
+    downloadLabel: "STL-Datei herunterladen",
+    tabAfter: "Nachher (reduziertes STL)",
+    facesLabel: "Dreiecke vorher / nachher",
+  },
+};
+
+let currentMode = "step";
+
+function applyMode(mode) {
+  currentMode = mode;
+  const texts = MODE_TEXT[mode];
+
+  modeStepBtn.classList.toggle("active", mode === "step");
+  modeSimplifyBtn.classList.toggle("active", mode === "simplify");
+  stepOnlySettings.classList.toggle("hidden", mode === "simplify");
+  simplifyOnlyHint.classList.toggle("hidden", mode !== "simplify");
+
+  modeSubtitle.textContent = texts.subtitle;
+  convertBtn.textContent = texts.button;
+  downloadLink.textContent = texts.downloadLabel;
+  tabAfter.textContent = texts.tabAfter;
+  resultFacesLabel.textContent = texts.facesLabel;
+}
+
+modeStepBtn.addEventListener("click", () => applyMode("step"));
+modeSimplifyBtn.addEventListener("click", () => applyMode("simplify"));
+applyMode("step");
+
 const previewPanel = document.getElementById("previewPanel");
 const tabBefore = document.getElementById("tabBefore");
 const tabAfter = document.getElementById("tabAfter");
@@ -52,6 +105,7 @@ decimate.addEventListener("input", () => (decimateVal.textContent = `${decimate.
 
 function currentSettings() {
   return {
+    mode: currentMode,
     smoothing_iterations: smoothing.value,
     decimate_percent: decimate.value,
     merge_planar: mergePlanar.checked ? "1" : "0",
@@ -181,7 +235,11 @@ tabBefore.addEventListener("click", () => {
 tabAfter.addEventListener("click", () => {
   if (tabAfter.disabled) return;
   setActiveTab(tabAfter);
-  loadPreview(`/api/preview/output/${currentJobId}`, { smooth: true });
+  // Im reinen Vereinfachungs-Modus bleibt das Ergebnis ein normales
+  // Dreiecksnetz (kein STEP-Volumenkoerper) - deshalb hier bewusst
+  // weiterhin flach schattiert darstellen, damit die (jetzt gröberen)
+  // Facetten ehrlich sichtbar bleiben.
+  loadPreview(`/api/preview/output/${currentJobId}`, { smooth: currentMode !== "simplify" });
 });
 
 function setActiveTab(tab) {
@@ -210,7 +268,7 @@ function pickFile(file) {
   }
   selectedFile = file;
   fileNameEl.textContent = file.name;
-  convertBtn.disabled = false;
+  enableModeSwitch();
   resetPanels();
 
   // Sofort-Vorschau, noch bevor irgendetwas hochgeladen oder
@@ -249,6 +307,12 @@ function showError(message) {
   errorBox.classList.remove("hidden");
 }
 
+function enableModeSwitch() {
+  convertBtn.disabled = false;
+  modeStepBtn.disabled = false;
+  modeSimplifyBtn.disabled = false;
+}
+
 function setProgress(pct, message) {
   progressFill.style.width = `${pct}%`;
   progressPercent.textContent = `${pct}%`;
@@ -270,6 +334,8 @@ async function startConversion() {
   resetPanels();
   progressSection.classList.remove("hidden");
   convertBtn.disabled = true;
+  modeStepBtn.disabled = true;
+  modeSimplifyBtn.disabled = true;
 
   const formData = new FormData();
   formData.append("file", selectedFile);
@@ -281,13 +347,13 @@ async function startConversion() {
     const data = await res.json();
     if (!res.ok) {
       showError(data.error || "Upload fehlgeschlagen.");
-      convertBtn.disabled = false;
+      enableModeSwitch();
       return;
     }
     jobId = data.job_id;
   } catch (err) {
     showError("Verbindung zum lokalen Server fehlgeschlagen.");
-    convertBtn.disabled = false;
+    enableModeSwitch();
     return;
   }
 
@@ -333,7 +399,7 @@ async function pollStatus(jobId) {
     if (res.status === 404) {
       stopTracking();
       showError("Auftrag nicht mehr bekannt (Server evtl. neu gestartet).");
-      convertBtn.disabled = false;
+      enableModeSwitch();
       return;
     }
     const data = await res.json();
@@ -350,9 +416,14 @@ function handleJobPayload(jobId, payload) {
     stopTracking();
     localStorage.removeItem(STORAGE_KEY);
 
-    resultKind.textContent = payload.is_solid
-      ? "Geschlossener Volumenkörper"
-      : "Offene Fläche (Netz war nicht wasserdicht)";
+    const mode = payload.mode || currentMode;
+    if (mode === "simplify") {
+      resultKind.textContent = "Reduziertes STL-Netz";
+    } else {
+      resultKind.textContent = payload.is_solid
+        ? "Geschlossener Volumenkörper"
+        : "Offene Fläche (Netz war nicht wasserdicht)";
+    }
     resultFaces.textContent = `${payload.face_count_before} → ${payload.face_count_after}`;
 
     if (payload.detected_shapes && payload.detected_shapes.length > 0) {
@@ -363,19 +434,21 @@ function handleJobPayload(jobId, payload) {
     }
 
     downloadLink.href = `/api/download/${jobId}`;
+    downloadLink.textContent = MODE_TEXT[mode].downloadLabel;
     resultBox.classList.remove("hidden");
-    convertBtn.disabled = false;
+    enableModeSwitch();
 
     if (payload.has_preview) {
       tabAfter.disabled = false;
+      tabAfter.textContent = MODE_TEXT[mode].tabAfter;
       setActiveTab(tabAfter);
-      loadPreview(`/api/preview/output/${jobId}`, { smooth: true });
+      loadPreview(`/api/preview/output/${jobId}`, { smooth: mode !== "simplify" });
     }
   } else if (payload.status === "error") {
     stopTracking();
     localStorage.removeItem(STORAGE_KEY);
     showError(payload.message || "Unbekannter Fehler bei der Umwandlung.");
-    convertBtn.disabled = false;
+    enableModeSwitch();
   }
 }
 
@@ -407,6 +480,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     const data = await res.json();
+    if (data.mode) applyMode(data.mode);
     if (data.status === "running") {
       currentJobId = savedJobId;
       convertBtn.disabled = true;

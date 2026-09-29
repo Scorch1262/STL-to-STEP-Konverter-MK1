@@ -19,12 +19,21 @@
     <main class="stage">
       <section class="panel upload-panel">
         <h1>Flächenrückführung</h1>
-        <p class="subtitle">
+        <p class="subtitle" id="modeSubtitle">
           Wandelt ein STL-Dreiecksnetz vollständig in einen einzelnen
           Volumenkörper (.stp) um. Ebene Bereiche werden dabei zu
           durchgehenden Flächen zusammengeführt, gekrümmte Bereiche
           (Zylinder/Kugeln) werden erkannt und angezeigt.
         </p>
+
+        <div id="modeTabs" class="mode-tabs">
+          <button id="modeStepBtn" class="mode-tab active" type="button" data-mode="step">
+            In STEP umwandeln
+          </button>
+          <button id="modeSimplifyBtn" class="mode-tab" type="button" data-mode="simplify">
+            Nur Dreiecke reduzieren (STL)
+          </button>
+        </div>
 
         <div id="dropzone" class="dropzone">
           <input type="file" id="fileInput" accept=".stl" hidden>
@@ -51,32 +60,42 @@
             <span id="decimateVal" class="setting-val">100%</span>
           </div>
 
-          <div class="setting-row setting-row-toggle">
-            <label for="mergePlanar">Ebene Flächen zusammenführen</label>
-            <input type="checkbox" id="mergePlanar" checked>
+          <div id="stepOnlySettings">
+            <div class="setting-row setting-row-toggle">
+              <label for="mergePlanar">Ebene Flächen zusammenführen</label>
+              <input type="checkbox" id="mergePlanar" checked>
+            </div>
+
+            <div class="setting-row setting-row-toggle">
+              <label for="detectShapes">Zylinder/Kugeln automatisch ersetzen</label>
+              <input type="checkbox" id="detectShapes" checked>
+            </div>
+
+            <div class="setting-row setting-row-toggle">
+              <label for="smoothScan">Scan-Oberfläche glätten (NURBS)</label>
+              <input type="checkbox" id="smoothScan">
+            </div>
+
+            <p class="settings-hint">
+              Volle Zylinder (Bohrungen, Wellen), Kugeln und Wölbungen
+              werden automatisch durch echte, glatte STEP-Flächen
+              ersetzt. Teilausschnitte, Verrundungen mit wechselndem
+              Radius und Freiformflächen bleiben als Facetten erhalten.
+              "Scan-Oberfläche glätten" wandelt unebene, verrauschte
+              Freiformbereiche (z. B. 3D-Scans) im Inneren in eine echte
+              glatte Fläche ohne Facetten um - am Rand bleibt ein
+              schmaler Streifen Facetten für einen sicheren Übergang
+              stehen. Funktioniert am besten bei Flächen ohne starke
+              Hinterschnitte (aus einer Blickrichtung scanbar).
+            </p>
           </div>
 
-          <div class="setting-row setting-row-toggle">
-            <label for="detectShapes">Zylinder/Kugeln automatisch ersetzen</label>
-            <input type="checkbox" id="detectShapes" checked>
-          </div>
-
-          <div class="setting-row setting-row-toggle">
-            <label for="smoothScan">Scan-Oberfläche glätten (NURBS)</label>
-            <input type="checkbox" id="smoothScan">
-          </div>
-
-          <p class="settings-hint">
-            Volle Zylinder (Bohrungen, Wellen), Kugeln und Wölbungen
-            werden automatisch durch echte, glatte STEP-Flächen
-            ersetzt. Teilausschnitte, Verrundungen mit wechselndem
-            Radius und Freiformflächen bleiben als Facetten erhalten.
-            "Scan-Oberfläche glätten" wandelt unebene, verrauschte
-            Freiformbereiche (z. B. 3D-Scans) im Inneren in eine echte
-            glatte Fläche ohne Facetten um - am Rand bleibt ein
-            schmaler Streifen Facetten für einen sicheren Übergang
-            stehen. Funktioniert am besten bei Flächen ohne starke
-            Hinterschnitte (aus einer Blickrichtung scanbar).
+          <p id="simplifyOnlyHint" class="settings-hint hidden">
+            Reduziert nur die Anzahl der Dreiecke (und glättet optional)
+            und liefert wieder eine .stl Datei - ohne jede Umwandlung in
+            einen CAD-Volumenkörper. Deutlich schneller als die
+            STEP-Umwandlung, z. B. um eine große Scan-Datei vor der
+            Weiterverwendung (Slicer, andere Software) zu verkleinern.
           </p>
         </details>
 
@@ -98,7 +117,7 @@
             <span id="resultKind" class="result-value">-</span>
           </div>
           <div class="result-row">
-            <span class="result-label">Flächen vorher / nachher</span>
+            <span id="resultFacesLabel" class="result-label">Flächen vorher / nachher</span>
             <span id="resultFaces" class="result-value">-</span>
           </div>
           <div id="resultShapesRow" class="result-row hidden">
@@ -114,7 +133,7 @@
       <section id="previewPanel" class="panel preview-panel hidden">
         <div class="preview-tabs">
           <button id="tabBefore" class="preview-tab active" type="button">Vorher (STL)</button>
-          <button id="tabAfter" class="preview-tab" type="button" disabled>Nachher (STEP-Ergebnis)</button>
+          <button id="tabAfter" class="preview-tab" type="button" disabled>Nachher</button>
         </div>
         <div id="viewer" class="viewer"></div>
         <p class="viewer-hint">Ziehen zum Drehen &middot; Scrollen zum Zoomen</p>
