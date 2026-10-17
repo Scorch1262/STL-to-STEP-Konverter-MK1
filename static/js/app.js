@@ -82,12 +82,15 @@ function applyMode(mode) {
 
 modeStepBtn.addEventListener("click", () => applyMode("step"));
 modeSimplifyBtn.addEventListener("click", () => applyMode("simplify"));
-applyMode("step");
 
 const previewPanel = document.getElementById("previewPanel");
 const tabBefore = document.getElementById("tabBefore");
 const tabAfter = document.getElementById("tabAfter");
 const viewerEl = document.getElementById("viewer");
+
+// Erst NACH allen Element-Konstanten aufrufen (sonst Zugriff auf noch nicht
+// initialisierte const-Variablen -> ReferenceError -> Skript bricht ab).
+applyMode("step");
 
 let selectedFile = null;
 let selectedFileBuffer = null;

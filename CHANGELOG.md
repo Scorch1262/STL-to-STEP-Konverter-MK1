@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.1 - Fix: STL-Upload auf der Weboberflaeche funktionierte in 1.7.0 nicht
+- **Problem:** In v1.7.0 liess sich ueber die Webseite keine STL-Datei
+  mehr hochladen (Dropzone/Button reagierten nicht).
+- **Ursache:** Beim Einbau der Modus-Umschaltung wurde `applyMode("step")`
+  in `static/js/app.js` aufgerufen, BEVOR die Konstanten `tabAfter`,
+  `tabBefore`, `previewPanel` und `viewerEl` weiter unten deklariert
+  waren. Zugriff auf eine noch nicht initialisierte `const`-Variable
+  wirft einen ReferenceError - das gesamte Skript brach damit beim
+  Laden ab, und es wurde kein einziger Event-Handler registriert.
+- **Fix:** Der Aufruf steht jetzt NACH allen Element-Konstanten.
+- **Pruefung:** Diesmal im echten Browser (Chromium/Playwright) getestet
+  statt nur per Syntaxcheck: Datei waehlen, Modus umschalten, Start,
+  Ergebnis und Download-Beschriftung - ohne JS-Fehler.
+
 ## 1.7.0 - Neuer Modus: Nur Dreiecke reduzieren (STL, ohne STEP-Umwandlung)
 - **Neue Funktion:** Auf der Weboberfläche lässt sich jetzt oben
   zwischen zwei Modi umschalten:
